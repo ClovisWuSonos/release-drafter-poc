@@ -7,6 +7,20 @@ on:
         description: 'Version being deployed (e.g. 1.1.3) — must match an existing cloud-settings-* tag'
         required: true
         type: string
+      simulate_failure:
+        description: 'Simulate a failed region partway through the deploy'
+        required: false
+        type: boolean
+        default: false
+      fail_at_region:
+        description: 'Which region fails, if simulate_failure is true'
+        required: false
+        type: choice
+        default: us-west-2
+        options:
+          - us-east-1
+          - us-west-2
+          - eu-west-1
 
 permissions:
   contents: write
@@ -47,50 +61,94 @@ jobs:
             echo "DRAFT_BODY_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # Step B: simulate a region-by-region deploy and PATCH the rollout
-      # status straight into the current draft body via the REST API.
-      - name: "Step B - Simulate deploy, PATCH rollout status onto the draft"
+      # Step B: simulate a region-by-region deploy, PATCHing the draft after
+      # EVERY region so the rollout table is genuinely live, not one static
+      # write at the end. If simulate_failure is set, the chosen region
+      # reports failure and the loop stops there — later regions are never
+      # attempted, same as a real rollout would halt.
+      - name: "Step B - Simulate per-region deploy, live-patch rollout status"
         id: rollout
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRAFT_ID: ${{ steps.draft.outputs.draft_id }}
           DRAFT_BODY: ${{ steps.draft.outputs.draft_body }}
+          SIMULATE_FAILURE: ${{ inputs.simulate_failure }}
+          FAIL_AT_REGION: ${{ inputs.fail_at_region }}
         run: |
-          DEPLOY_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          REGIONS=(us-east-1 us-west-2 eu-west-1)
+          ROWS=""
+          DEPLOY_FAILED=false
+          ROLLOUT_TABLE=""
 
-          ROLLOUT_TABLE=$(cat <<EOF
+          for REGION in "${REGIONS[@]}"; do
+            sleep 3 # simulate per-region deploy time
 
-          ## 🚀 Rollout Status
+            TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          | Region      | Status     | Timestamp (UTC)     |
-          |-------------|------------|----------------------|
-          | us-east-1   | ✅ Success | ${DEPLOY_TIME}       |
-          | us-west-2   | ✅ Success | ${DEPLOY_TIME}       |
-          | eu-west-1   | ✅ Success | ${DEPLOY_TIME}       |
+            if [ "$SIMULATE_FAILURE" == "true" ] && [ "$REGION" == "$FAIL_AT_REGION" ]; then
+              STATUS_LABEL="❌ Failed"
+              DEPLOY_FAILED=true
+            else
+              STATUS_LABEL="✅ Success"
+            fi
 
-          _Deployed version: ${{ inputs.version }}_
-          EOF
-          )
+            ROWS="${ROWS}$(printf '| %s | %s | %s |\n' "$REGION" "$STATUS_LABEL" "$TS")"
 
-          # Save the table on its own so Step D can re-attach it as a footer
-          # after release-drafter regenerates the body (see README for why).
+            ROLLOUT_TABLE=$(printf '\n## 🚀 Rollout Status\n\n| Region | Status | Timestamp (UTC) |\n|---|---|---|\n%s\n_Deploying version: %s_\n' \
+              "$ROWS" "${{ inputs.version }}")
+
+            jq -n --arg body "${DRAFT_BODY}${ROLLOUT_TABLE}" '{body: $body}' | gh api \
+              --method PATCH \
+              "repos/${{ github.repository }}/releases/${DRAFT_ID}" \
+              --input -
+
+            echo "Patched draft after ${REGION} (failed so far: ${DEPLOY_FAILED})"
+
+            if [ "$DEPLOY_FAILED" == "true" ]; then
+              echo "Stopping rollout — ${REGION} failed."
+              break
+            fi
+          done
+
+          # Save whatever the table looked like when the loop stopped, so
+          # Step D can re-attach it as a footer (success case), because
+          # release-drafter fully regenerates the body on every run.
           {
             echo "rollout_table<<ROLLOUT_EOF"
             echo "$ROLLOUT_TABLE"
             echo "ROLLOUT_EOF"
           } >> "$GITHUB_OUTPUT"
+          echo "deploy_failed=$DEPLOY_FAILED" >> "$GITHUB_OUTPUT"
 
-          NEW_BODY="${DRAFT_BODY}${ROLLOUT_TABLE}"
+      # Step B-fail: on failure, overwrite the partial table with an
+      # explicit marker, then fail the job. Nothing downstream (publish,
+      # mark-latest, redraft) runs. This marker is intentionally short-lived:
+      # the next real push to main runs release-drafter and fully
+      # regenerates the body, wiping it (see README). The draft itself is
+      # otherwise untouched and keeps accumulating commits normally —
+      # including this failed attempt's — so nothing is lost.
+      - name: "Step B-fail - Leave a failure marker, then fail the job"
+        if: steps.rollout.outputs.deploy_failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRAFT_ID: ${{ steps.draft.outputs.draft_id }}
+          DRAFT_BODY: ${{ steps.draft.outputs.draft_body }}
+        run: |
+          TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          FAILURE_NOTE=$(printf '\n## 🚀 Rollout Status\n⚠️ Deploy attempt for %s failed at **%s** (%s) — not published, "latest" unchanged. This note is cleared automatically by the next merge to main.\n' \
+            "${{ inputs.version }}" "${{ inputs.fail_at_region }}" "$TS")
 
-          jq -n --arg body "$NEW_BODY" '{body: $body}' | gh api \
+          jq -n --arg body "${DRAFT_BODY}${FAILURE_NOTE}" '{body: $body}' | gh api \
             --method PATCH \
             "repos/${{ github.repository }}/releases/${DRAFT_ID}" \
             --input -
 
-          echo "Patched draft ${DRAFT_ID} with rollout status for regions."
+          echo "::error::Deploy of ${{ inputs.version }} failed at ${{ inputs.fail_at_region }}. Release NOT published; 'latest' unchanged."
+          exit 1
 
       # Step C: sleep, giving you a window to merge a competing PR to main
       # (simulating the 1.1.4 race) while this deploy is still "in flight".
+      # Skipped entirely on the failure path above (job already exited).
       - name: "Step C - Sleep to allow race-condition simulation"
         run: |
           echo "Sleeping 15s. Merge a competing PR to main NOW to simulate the race condition..."
@@ -115,6 +173,17 @@ jobs:
           footer: ${{ steps.rollout.outputs.rollout_table }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step D2: mark this release as "latest" — GitHub's native
+      # make_latest flag (gh release edit --latest), not a moved git tag.
+      # Only ever reached after a successful publish, since B-fail exits
+      # the job before this point on failure.
+      - name: "Step D2 - Mark this release as latest (now in production)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "cloud-settings-${{ inputs.version }}" --latest
+          echo "cloud-settings-${{ inputs.version }} marked as the latest release."
 
       # Step E: check whether a newer tag already exists beyond the one we
       # just published (e.g. cloud-settings-1.1.4, created by auto-tag during
