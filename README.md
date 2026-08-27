@@ -64,10 +64,12 @@ independent calculations that happen to agree:
    so `cloud-settings-1.1.3` is a fixed, immutable pointer the moment the
    1.1.3 PR merges, regardless of what merges after it.
 2. `manual-deploy.yml` Step D calls release-drafter with an explicit
-   `tag: cloud-settings-1.1.3` (+ matching `version`). Since that tag already
-   exists as a real git ref, GitHub/release-drafter anchors the changelog
-   computation to that commit — it diffs "last published release → this tag",
-   which by construction excludes anything merged later (like 1.1.4).
+   `tag: cloud-settings-1.1.3` (+ matching `version`) **and** an explicit
+   `commitish` pinned to that tag's exact SHA (Step D-pin). The `commitish`
+   part is not optional — see the finding below. Only with `commitish` set
+   does the changelog computation actually anchor to that commit; `tag` and
+   `version` alone only control the output's name/tag, not which commits
+   get included.
 3. release-drafter **fully regenerates** the release body from its template
    every time it runs — it does not preserve manual edits. That means the
    rollout-status table Step B PATCHed onto the draft would normally get
@@ -84,6 +86,40 @@ If any of steps 1–4 didn't hold, this is where you'd expect notes to leak
 (e.g. the published 1.1.3 release picking up the 1.1.4 commit, losing the
 rollout table, or 1.1.4's draft inheriting the rollout table or a mismatched
 title/tag).
+
+## Confirmed by testing: the leak actually happened, until `commitish` was pinned
+
+Live-tested, and it failed the first time. The original Step D passed only
+`tag`/`version`, no `commitish`. Running a real race (a second PR merging
+during Step C's sleep) produced a published release whose changelog
+contained **both** the target commit and the race commit that landed
+afterward — even though the git tag itself was correctly pinned to the
+earlier commit:
+
+```
+$ git rev-parse cloud-settings-1.1.7
+4b38f90...  # Feature B - the commit the tag actually points to
+
+$ gh release view cloud-settings-1.1.7 --json body
+## Changes
+- Feature C (the race commit — should NOT be here)
+- Feature B
+```
+
+Root cause: `tag` and `version` inputs on the release-drafter action only
+control the *name* of the output. The changelog's commit *range* is computed
+against a separate `commitish` input, which defaults to `main` — a moving
+ref. By the time Step D's API calls actually ran (after the Step C sleep),
+`main` had already advanced past the target tag to include the race
+commit, and that's the ref release-drafter used to compute "commits since
+last release" — the pinned git tag was irrelevant to that computation
+because nothing told release-drafter to use it.
+
+The fix (Step D-pin): resolve `cloud-settings-$VERSION`'s exact commit SHA
+from the already-checked-out repo (safe — the checkout happens before the
+race window even opens) and pass it as `commitish` on the Step D call. Only
+then does the changelog actually anchor to the tag's commit regardless of
+what `main` does afterward.
 
 ## Why a failed deploy doesn't lose anything
 

@@ -179,12 +179,28 @@ jobs:
           echo "Sleeping 15s. Merge a competing PR to main NOW to simulate the race condition..."
           sleep 15
 
+      # Step D-pin: resolve the exact commit SHA that
+      # cloud-settings-${{ inputs.version }} points to. This is NOT
+      # optional - confirmed by testing (see README): `tag`/`version` on the
+      # release-drafter action only control naming. The changelog's commit
+      # RANGE comes from a separate `commitish` input, which defaults to
+      # `main` - a moving ref - if left unset. During a real race, `main` has
+      # already advanced past the target tag by the time this step runs, so
+      # without pinning `commitish` explicitly, the published changelog
+      # picks up commits that landed after the tag, even though the tag
+      # itself is correctly pinned. The tag being immutable was never
+      # sufficient on its own.
+      - name: "Step D-pin - Resolve the commit this version's tag points to"
+        id: pin
+        run: |
+          SHA=$(git rev-parse "cloud-settings-${{ inputs.version }}")
+          echo "cloud-settings-${{ inputs.version }} -> ${SHA}"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
       # Step D: publish the release for the tag we were actually deploying,
-      # not whatever main/the draft looks like right now. Because the tag
-      # cloud-settings-${{ inputs.version }} was created by auto-tag at merge
-      # time (constraint #1), it's pinned to a specific commit SHA, so
-      # release-drafter computes the changelog only up to that commit —
-      # this is what makes the race self-heal.
+      # not whatever main/the draft looks like right now. `commitish` is
+      # what actually pins the changelog to that commit (see Step D-pin);
+      # `tag`/`version` alone do not.
       #
       # `footer` re-attaches the rollout table Step B computed, because
       # release-drafter fully regenerates the release body from the template
@@ -195,6 +211,7 @@ jobs:
           publish: true
           version: ${{ inputs.version }}
           tag: cloud-settings-${{ inputs.version }}
+          commitish: ${{ steps.pin.outputs.sha }}
           footer: ${{ steps.rollout.outputs.rollout_table }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
