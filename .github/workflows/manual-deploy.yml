@@ -92,7 +92,11 @@ jobs:
               STATUS_LABEL="✅ Success"
             fi
 
-            ROWS="${ROWS}$(printf '| %s | %s | %s |\n' "$REGION" "$STATUS_LABEL" "$TS")"
+            # Command substitution strips trailing newlines, so printf's \n
+            # would otherwise be silently eaten and every row would run
+            # together on one line. Append the newline explicitly, outside
+            # the substitution.
+            ROWS="${ROWS}$(printf '| %s | %s | %s |' "$REGION" "$STATUS_LABEL" "$TS")"$'\n'
 
             ROLLOUT_TABLE=$(printf '\n## 🚀 Rollout Status\n\n| Region | Status | Timestamp (UTC) |\n|---|---|---|\n%s\n_Deploying version: %s_\n' \
               "$ROWS" "${{ inputs.version }}")
