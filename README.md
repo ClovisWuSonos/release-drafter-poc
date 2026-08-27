@@ -117,6 +117,32 @@ ref. The immutable `cloud-settings-X.Y.Z` tags this whole design leans on are
 never touched by a deploy; only the previously-published release's "latest"
 flag moves to the newly-published one.
 
+## Confirmed by testing: re-running this workflow for an already-published version is unsafe
+
+Live-tested, not theoretical: running `manual-deploy.yml` a second time for a
+`version` that's already published does **not** safely no-op or safely
+re-edit it. What actually happens:
+
+1. release-drafter resolves "last release" to the repo's real state — which
+   is now that same tag, since it's already published. It computes the
+   changelog as "commits since last release", i.e. *since the version
+   you're deploying*, not up to it — the wrong range entirely.
+2. It then tries to `PATCH` the current open draft, retagging it to the
+   already-published tag name — and GitHub rejects that with
+   `422 Validation Failed: {"code":"already_exists","field":"tag_name"}`,
+   because that tag name is already claimed by the real published release.
+3. **That error doesn't fail the step.** The job reports `success` despite
+   an unhandled error in the log. A double-trigger, a retry, or automation
+   retrying on a transient failure would silently do nothing useful while
+   looking completely green.
+
+No data is corrupted by this — the already-published release is left
+untouched (the failing `PATCH` never lands) — but it's a false-success that
+would be easy to miss. `Step A-guard` fails the job fast, with a clear
+reason, before any of this can happen: it checks whether
+`cloud-settings-$VERSION` is already a non-draft release and refuses to
+proceed if so.
+
 ## One-time setup
 
 ```bash

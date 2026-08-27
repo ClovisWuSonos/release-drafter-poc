@@ -34,6 +34,27 @@ jobs:
         with:
           fetch-depth: 0 # need full tag history for Step E's tag comparison
 
+      # Step A-guard: refuse to run against a version that's already
+      # published. Confirmed by testing: re-running this workflow for an
+      # already-published tag doesn't safely no-op — release-drafter
+      # resolves "last release" to that same tag, computes the changelog for
+      # commits *since* it (wrong range), then 422s trying to retag the
+      # current draft to a tag_name that's already taken. That error does
+      # NOT fail the step - it's swallowed, so the run reports success
+      # having silently done nothing. Fail fast here instead, with a clear
+      # reason, before any of that can happen.
+      - name: "Step A-guard - Refuse to redeploy an already-published version"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ALREADY_PUBLISHED=$(gh api "repos/${{ github.repository }}/releases/tags/cloud-settings-${{ inputs.version }}" \
+            --jq '.draft == false' 2>/dev/null || echo "false")
+
+          if [ "$ALREADY_PUBLISHED" == "true" ]; then
+            echo "::error::cloud-settings-${{ inputs.version }} is already published. Re-running this workflow for it won't republish it correctly - release-drafter would compute the wrong commit range and fail to retag (see README). Deploy the current unreleased version instead."
+            exit 1
+          fi
+
       # Step A: find the currently-open draft release and snapshot its body.
       - name: "Step A - Locate active draft release"
         id: draft
