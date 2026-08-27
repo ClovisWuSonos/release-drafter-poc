@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full tag history for Step E's tag comparison
 
       # Step A: find the currently-open draft release and snapshot its body.
       - name: "Step A - Locate active draft release"
@@ -96,9 +98,9 @@ jobs:
 
       # Step D: publish the release for the tag we were actually deploying,
       # not whatever main/the draft looks like right now. Because the tag
-      # cloud-settings-${{ inputs.version }} was created by auto-tag.yml at
-      # merge time (constraint #1), it's pinned to a specific commit SHA,
-      # so release-drafter computes the changelog only up to that commit —
+      # cloud-settings-${{ inputs.version }} was created by auto-tag at merge
+      # time (constraint #1), it's pinned to a specific commit SHA, so
+      # release-drafter computes the changelog only up to that commit —
       # this is what makes the race self-heal.
       #
       # `footer` re-attaches the rollout table Step B computed, because
@@ -114,14 +116,38 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Step E: immediately force release-drafter to regenerate a fresh
-      # draft for whatever is left unreleased on main (e.g. the 1.1.4 PR
-      # that snuck in during Step C), instead of waiting for the next push.
-      # This is what makes "a brand new clean draft appears right after
-      # publish" happen deterministically for the POC, rather than by luck.
+      # Step E: check whether a newer tag already exists beyond the one we
+      # just published (e.g. cloud-settings-1.1.4, created by auto-tag during
+      # the Step C race window). If so, immediately draft it — with an
+      # explicit version/tag, same reasoning as Step D: never let
+      # release-drafter guess its own version, always hand it the exact
+      # tag it should match, so title and tag can't drift apart.
+      - name: "Step E - Check for a newer tag beyond what was just published"
+        id: next
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch --tags --force
+          LATEST=$(git tag --list 'cloud-settings-*' \
+            | sed 's/cloud-settings-//' \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -n1)
+
+          if [ "$LATEST" == "${{ inputs.version }}" ]; then
+            echo "No newer tag yet (latest is still ${LATEST}) — nothing to draft."
+            echo "has_newer=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Newer tag found: cloud-settings-${LATEST}"
+            echo "has_newer=true" >> "$GITHUB_OUTPUT"
+            echo "next_version=$LATEST" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: "Step E - Recreate the next draft immediately"
+        if: steps.next.outputs.has_newer == 'true'
         uses: release-drafter/release-drafter@v6
         with:
           publish: false
+          version: ${{ steps.next.outputs.next_version }}
+          tag: cloud-settings-${{ steps.next.outputs.next_version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
