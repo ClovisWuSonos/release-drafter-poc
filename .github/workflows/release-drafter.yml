@@ -1,0 +1,22 @@
+name: Release Drafter
+
+# Runs on every push to main, so the draft release keeps accumulating
+# commits/PRs merged to main, comparing against the last *published*
+# GitHub Release. This is the continuous "running draft" half of the POC.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {} # handy for manually forcing a draft refresh during testing
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update_release_draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
