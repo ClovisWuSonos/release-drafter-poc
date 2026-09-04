@@ -1,1 +1,1 @@
-settings-panel: v2
+config-reload: stable
