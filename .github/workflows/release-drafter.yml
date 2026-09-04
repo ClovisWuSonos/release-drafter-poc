@@ -64,7 +64,37 @@ jobs:
     needs: auto-tag
     runs-on: ubuntu-latest
     steps:
-      - uses: release-drafter/release-drafter@v6
+      - name: Get rollback-aware anchor
+        id: anchor
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              const { data } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              core.info(`Latest release: ${data.tag_name}`);
+              core.setOutput('tag', data.tag_name);
+            } catch (e) {
+              core.info('No releases yet');
+              core.setOutput('tag', '');
+            }
+
+      - name: Update draft (rollback-aware anchor)
+        if: steps.anchor.outputs.tag != ''
+        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        with:
+          publish: false
+          version: ${{ needs.auto-tag.outputs.version }}
+          tag: cloud-settings-${{ needs.auto-tag.outputs.version }}
+          from: ${{ steps.anchor.outputs.tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update draft (first release — no anchor)
+        if: steps.anchor.outputs.tag == ''
+        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
           publish: false
           version: ${{ needs.auto-tag.outputs.version }}
