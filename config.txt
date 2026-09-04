@@ -1,1 +1,1 @@
-dark-mode: enabled
+settings-panel: v2
