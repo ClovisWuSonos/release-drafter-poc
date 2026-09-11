@@ -104,8 +104,8 @@ jobs:
             ## 🔴 Rollout Status — This Release Was Rolled Back
             | Region | Status |
             |---|---|
-            | us-east-1 | ❌ Rolled Back |
-            | eu-west-1 | ❌ Rolled Back |
+            | us-east-1 | ⏪ Rolled Back |
+            | eu-west-1 | ⏪ Rolled Back |
 
             _This release was rolled back in production. Superseded by cloud-settings-1.2.1, which re-ships these changes plus the hotfix._`;
 
@@ -202,8 +202,8 @@ jobs:
             ## 🚀 Rollout Status
             | Region | Status |
             |---|---|
-            | us-east-1 | ✅ Deployed |
-            | eu-west-1 | ✅ Deployed |
+            | us-east-1 | ✅ Success |
+            | eu-west-1 | ✅ Success |
 
             _${{ steps.target.outputs.label }}_
         env:
