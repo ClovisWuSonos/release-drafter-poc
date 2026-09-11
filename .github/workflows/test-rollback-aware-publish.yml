@@ -1,0 +1,199 @@
+name: Test Rollback-Aware Publish
+
+# Two scenarios to validate that the publish workflow anchors the changelog correctly:
+#
+# Scenario A — forward-deploy:
+#   Pin --latest to cloud-settings-1.1.12, publish Cloud Settings 1.2.0.
+#   Expected: changelog contains only PR #7 ("Critical hotfix after rollback").
+#
+# Scenario B — rollback:
+#   Pin --latest back to cloud-settings-1.1.10 (simulates: 1.1.11 and 1.1.12 were
+#   deployed then rolled back; only 1.1.10 is marked --latest). Publish Cloud Settings 1.2.1.
+#   Expected: changelog spans PRs #5, #6, #7 (everything since 1.1.10).
+#   Without the `from` fix, Release Drafter would anchor to 1.1.12 (highest semver published)
+#   and show only PR #7, silently dropping the re-shipped #5 and #6.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: >
+          forward-deploy: normal path — expect PR #7 only.
+          rollback: rolled-back anchor — expect PRs #5 #6 #7.
+        type: choice
+        options:
+          - forward-deploy
+          - rollback
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clean up previous test releases
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const candidates = ['cloud-settings-1.2.0', 'cloud-settings-1.2.1'];
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 50,
+            });
+            for (const tag of candidates) {
+              const rel = releases.find(r => r.tag_name === tag);
+              if (rel) {
+                await github.rest.repos.deleteRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: rel.id,
+                });
+                core.info(`Deleted release ${tag}`);
+              }
+              try {
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${tag}`,
+                });
+                core.info(`Deleted tag ${tag}`);
+              } catch {
+                core.info(`Tag ${tag} did not exist, skipping`);
+              }
+            }
+
+      - name: Pin --latest anchor for this scenario
+        uses: actions/github-script@v7
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const scenario = process.env.SCENARIO;
+            // forward-deploy → anchor to 1.1.12 (normal state; only PR#7 is new)
+            // rollback       → anchor to 1.1.10 (1.1.11 & 1.1.12 deployed then rolled back)
+            const anchor = scenario === 'forward-deploy'
+              ? 'cloud-settings-1.1.12'
+              : 'cloud-settings-1.1.10';
+
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 50,
+            });
+            const rel = releases.find(r => r.tag_name === anchor);
+            if (!rel) {
+              core.setFailed(`Release ${anchor} not found`);
+              return;
+            }
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: rel.id,
+              make_latest: 'true',
+            });
+            core.info(`Pinned --latest → ${anchor}`);
+
+      - name: Get --latest release tag (rollback-aware anchor)
+        id: latest
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data } = await github.rest.repos.getLatestRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            core.info(`--latest is: ${data.tag_name}`);
+            core.setOutput('tag', data.tag_name);
+
+      - name: Set publish target for this scenario
+        id: target
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          if [[ "$SCENARIO" == "forward-deploy" ]]; then
+            echo "tag=cloud-settings-1.2.0"     >> "$GITHUB_OUTPUT"
+            echo "version=1.2.0"                >> "$GITHUB_OUTPUT"
+            echo "name=Cloud Settings 1.2.0"    >> "$GITHUB_OUTPUT"
+            echo "label=Scenario A — forward-deploy. Anchor: cloud-settings-1.1.12. Expect: PR #7 only." >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=cloud-settings-1.2.1"     >> "$GITHUB_OUTPUT"
+            echo "version=1.2.1"                >> "$GITHUB_OUTPUT"
+            echo "name=Cloud Settings 1.2.1"    >> "$GITHUB_OUTPUT"
+            echo "label=Scenario B — rollback. --latest rolled back to cloud-settings-1.1.10. Expect: PRs #5 #6 #7." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish release (rollback-aware, commitish-pinned)
+        id: publish
+        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        with:
+          publish: true
+          commitish: ${{ github.sha }}
+          from: ${{ steps.latest.outputs.tag }}
+          version: ${{ steps.target.outputs.version }}
+          tag: ${{ steps.target.outputs.tag }}
+          name: ${{ steps.target.outputs.name }}
+          footer: |
+            ---
+            ## 🚀 Rollout Status
+            | Region | Status |
+            |---|---|
+            | us-east-1 | ✅ Deployed |
+            | eu-west-1 | ✅ Deployed |
+
+            _${{ steps.target.outputs.label }}_
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify changelog
+        uses: actions/github-script@v7
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+          RELEASE_TAG: ${{ steps.publish.outputs.tag_name }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const scenario = process.env.SCENARIO;
+            const tag = process.env.RELEASE_TAG;
+
+            const { data: release } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag,
+            });
+
+            const body = release.body || '';
+            core.info(`Release URL: ${release.html_url}`);
+            core.info(`Release body:\n${body}`);
+
+            // Add a job summary
+            await core.summary
+              .addHeading(scenario === 'forward-deploy' ? 'Scenario A — Forward Deploy' : 'Scenario B — Rollback')
+              .addLink('View release', release.html_url)
+              .addCodeBlock(body, 'markdown')
+              .write();
+
+            if (scenario === 'forward-deploy') {
+              const hasSeven = body.includes('#7');
+              const hasEarlier = body.includes('#5') || body.includes('#6');
+              if (!hasSeven) {
+                core.setFailed('FAIL: PR #7 "Critical hotfix after rollback" is missing from changelog');
+              } else if (hasEarlier) {
+                core.setFailed('FAIL: PRs #5/#6 appear but should not (they are before the 1.1.12 anchor)');
+              } else {
+                core.info('✅ PASS: changelog contains PR #7 and correctly excludes earlier PRs');
+              }
+            } else {
+              const missing = ['#5', '#6', '#7'].filter(n => !body.includes(n));
+              if (missing.length > 0) {
+                core.setFailed(`FAIL: PRs ${missing.join(', ')} missing — rollback anchor is not working`);
+              } else {
+                core.info('✅ PASS: changelog spans PRs #5 #6 #7 (anchored back to cloud-settings-1.1.10)');
+              }
+            }
