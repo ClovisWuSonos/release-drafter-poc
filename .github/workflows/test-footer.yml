@@ -10,7 +10,7 @@ jobs:
   test-footer:
     runs-on: ubuntu-latest
     steps:
-      - uses: release-drafter/release-drafter@v6
+      - uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
           publish: false
           footer: |
