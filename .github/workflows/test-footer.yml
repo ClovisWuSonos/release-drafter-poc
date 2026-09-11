@@ -1,0 +1,23 @@
+name: Test Footer Input
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test-footer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        with:
+          publish: false
+          footer: |
+            ## 🚀 Rollout Status
+            | Region | Status | Timestamp |
+            |---|---|---|
+            | us-east-1 | ✅ Success | 2026-09-10T17:00:00Z |
+            | eu-west-1 | ✅ Success | 2026-09-10T17:05:00Z |
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
