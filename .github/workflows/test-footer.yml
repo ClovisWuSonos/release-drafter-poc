@@ -12,12 +12,15 @@ jobs:
     steps:
       - uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
-          publish: false
+          publish: true
+          version: "0.0.2-footer-test"
+          tag: "footer-test-0.0.2"
+          name: "Footer Test Release 2"
           footer: |
             ## 🚀 Rollout Status
             | Region | Status | Timestamp |
             |---|---|---|
-            | us-east-1 | ✅ Success | 2026-09-10T17:00:00Z |
-            | eu-west-1 | ✅ Success | 2026-09-10T17:05:00Z |
+            | us-east-1 | ✅ Success | 2026-09-11T10:00:00Z |
+            | eu-west-1 | ✅ Success | 2026-09-11T10:05:00Z |
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
