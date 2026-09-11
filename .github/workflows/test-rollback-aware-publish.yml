@@ -21,8 +21,8 @@ on:
     inputs:
       scenario:
         description: >
-          forward-deploy: normal path — expect PR #7 only.
-          rollback: rolled-back anchor — expect PRs #5 #6 #7.
+          forward-deploy: publishes Cloud Settings 1.2.0 anchored from cloud-settings-1.1.12.
+          rollback: simulates production rolled back to cloud-settings-1.1.10, then publishes Cloud Settings 1.2.1 with changelog spanning back to that version.
         type: choice
         options:
           - forward-deploy
