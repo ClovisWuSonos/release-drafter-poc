@@ -12,7 +12,10 @@ jobs:
     steps:
       - uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
-          publish: false
+          publish: true
+          version: "0.0.1-footer-test"
+          tag: "footer-test-0.0.1"
+          name: "Footer Test Release"
           footer: |
             ## 🚀 Rollout Status
             | Region | Status | Timestamp |
