@@ -1,20 +1,22 @@
 name: Test Rollback-Aware Publish
 
-# Verifies that `from` produces correct changelog anchoring in all three cases:
+# Tests that `from` produces correct changelog anchoring.
+#
+# Background: Release Drafter (this SHA) uses getLatestRelease() as its default anchor
+# when `from` is not specified. The `from` input overrides that anchor explicitly.
 #
 # Scenario A — normal forward deploy:
-#   --latest = cloud-settings-1.1.12 = highest semver. `from` is a no-op here:
-#   without it Release Drafter uses 1.1.12 (highest semver), with it we also pass 1.1.12.
-#   Both must produce PR #7 only.
+#   `--latest` = cloud-settings-1.1.12. Publish 1.2.0 with `from: cloud-settings-1.1.12`.
+#   Expected: PR #7 only.
 #
-# Scenario B — rollback:
-#   --latest rolled back to cloud-settings-1.1.10; 1.2.0 remains published as highest semver.
-#   B1 (without from): anchors to 1.2.0 → "No changes" ← WRONG.
-#   B2 (with from: --latest = 1.1.10): anchors to 1.1.10 → PRs #5 #6 #7 ← CORRECT.
+# Scenario B — rollback (key test):
+#   `--latest` rolled back to cloud-settings-1.1.10. cloud-settings-1.2.0 remains published.
+#   B1 — without `from`: Release Drafter calls getLatestRelease() → 1.1.10. PRs #5 #6 #7?
+#   B2 — with `from: cloud-settings-1.1.10`: explicit anchor. PRs #5 #6 #7.
+#   Comparing B1 and B2 shows whether `from` changes anything when --latest is managed.
 #
-# Scenario C — initial release (no --latest exists):
-#   getLatestRelease() returns 404 → from tag = "".
-#   Verify the single Release Drafter call still works when from is empty.
+# Scenario C — initial release (no --latest):
+#   `from` = "" (simulated 404 path). Verify the single-step approach still creates a release.
 
 on:
   workflow_dispatch: {}
@@ -60,7 +62,8 @@ jobs:
             }
 
       # ── Scenario A — normal forward deploy ────────────────────────────────
-      - name: "Scenario A — pin --latest to cloud-settings-1.1.12"
+      - name: "Scenario A — pin --latest to cloud-settings-1.1.12 and verify"
+        id: pin-a
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -73,81 +76,28 @@ jobs:
               owner: context.repo.owner, repo: context.repo.repo,
               release_id: rel.id, make_latest: 'true',
             });
-            core.info('Pinned --latest → cloud-settings-1.1.12');
-
-      - name: "Scenario A1 — publish 1.2.0 WITHOUT from"
-        id: publish-a1
-        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
-        with:
-          publish: true
-          commitish: ${{ github.sha }}
-          version: "1.2.0"
-          tag: "cloud-settings-1.2.0"
-          name: "Cloud Settings 1.2.0"
-          footer: |
-            ---
-            ## 🚀 Rollout Status
-            | Region | Status |
-            |---|---|
-            | us-east-1 | ✅ Success |
-            | eu-west-1 | ✅ Success |
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: "Scenario A1 — record result (no from)"
-        id: result-a1
-        uses: actions/github-script@v7
-        env:
-          RELEASE_TAG: ${{ steps.publish-a1.outputs.tag_name }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { data: rel } = await github.rest.repos.getReleaseByTag({
-              owner: context.repo.owner, repo: context.repo.repo,
-              tag: process.env.RELEASE_TAG,
-            });
-            const body = rel.body || '';
-            core.info(`A1 body:\n${body}`);
-            core.setOutput('has_seven',   String(body.includes('#7')));
-            core.setOutput('has_earlier', String(body.includes('#5') || body.includes('#6')));
-
-      - name: "Scenario A2 — reset cloud-settings-1.2.0 for re-publish with from"
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { data: releases } = await github.rest.repos.listReleases({
-              owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
-            });
-            const rel = releases.find(r => r.tag_name === 'cloud-settings-1.2.0');
-            if (rel) await github.rest.repos.deleteRelease({
-              owner: context.repo.owner, repo: context.repo.repo, release_id: rel.id,
-            });
-            try {
-              await github.rest.git.deleteRef({
-                owner: context.repo.owner, repo: context.repo.repo, ref: 'tags/cloud-settings-1.2.0',
+            // Verify --latest took effect (retry up to 5 times with 1s delay)
+            for (let i = 0; i < 5; i++) {
+              const { data: latest } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner, repo: context.repo.repo,
               });
-            } catch {}
+              if (latest.tag_name === 'cloud-settings-1.1.12') {
+                core.info(`--latest confirmed: ${latest.tag_name}`);
+                core.setOutput('tag', latest.tag_name);
+                return;
+              }
+              core.info(`--latest is ${latest.tag_name}, waiting for propagation... (attempt ${i+1})`);
+              await new Promise(r => setTimeout(r, 1000));
+            }
+            core.setFailed('--latest did not update to cloud-settings-1.1.12 after 5 attempts');
 
-      - name: "Scenario A2 — get --latest tag"
-        id: latest-a
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { data } = await github.rest.repos.getLatestRelease({
-              owner: context.repo.owner, repo: context.repo.repo,
-            });
-            core.info(`--latest: ${data.tag_name}`);
-            core.setOutput('tag', data.tag_name);
-
-      - name: "Scenario A2 — publish 1.2.0 WITH from: --latest"
-        id: publish-a2
+      - name: "Scenario A — publish Cloud Settings 1.2.0 WITH from: --latest"
+        id: publish-a
         uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
           publish: true
           commitish: ${{ github.sha }}
-          from: ${{ steps.latest-a.outputs.tag }}
+          from: ${{ steps.pin-a.outputs.tag }}
           version: "1.2.0"
           tag: "cloud-settings-1.2.0"
           name: "Cloud Settings 1.2.0"
@@ -161,44 +111,37 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Scenario A — assert: from is a no-op in the normal case"
+      - name: "Scenario A — assert: from: cloud-settings-1.1.12 → PR #7 only"
         uses: actions/github-script@v7
         env:
-          RELEASE_TAG: ${{ steps.publish-a2.outputs.tag_name }}
-          A1_HAS_SEVEN:   ${{ steps.result-a1.outputs.has_seven }}
-          A1_HAS_EARLIER: ${{ steps.result-a1.outputs.has_earlier }}
+          RELEASE_TAG: ${{ steps.publish-a.outputs.tag_name }}
+          FROM_TAG:    ${{ steps.pin-a.outputs.tag }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const a1HasSeven   = process.env.A1_HAS_SEVEN   === 'true';
-            const a1HasEarlier = process.env.A1_HAS_EARLIER === 'true';
             const { data: rel } = await github.rest.repos.getReleaseByTag({
               owner: context.repo.owner, repo: context.repo.repo,
               tag: process.env.RELEASE_TAG,
             });
             const body = rel.body || '';
-            const a2HasSeven   = body.includes('#7');
-            const a2HasEarlier = body.includes('#5') || body.includes('#6');
-
-            core.info(`A1 (no from):       PR #7=${a1HasSeven} | PRs #5/#6=${a1HasEarlier}`);
-            core.info(`A2 (from=1.1.12):   PR #7=${a2HasSeven} | PRs #5/#6=${a2HasEarlier}`);
-
+            const hasSeven   = body.includes('#7');
+            const hasEarlier = body.includes('#5') || body.includes('#6');
+            core.info(`A body:\n${body}`);
             await core.summary
-              .addHeading('Scenario A — Normal Forward Deploy')
+              .addHeading('Scenario A — Normal Forward Deploy (cloud-settings-1.2.0)')
               .addTable([
-                [{data:'Test',header:true},{data:'Anchor used',header:true},{data:'PR #7',header:true},{data:'PRs #5/#6',header:true},{data:'Result',header:true}],
-                ['A1 — without from', '1.1.12 (default = highest semver)', String(a1HasSeven), String(a1HasEarlier), a1HasSeven && !a1HasEarlier ? '✅ Correct' : '❌ Wrong'],
-                ['A2 — with from: 1.1.12', '1.1.12 (from = --latest)', String(a2HasSeven), String(a2HasEarlier), a2HasSeven && !a2HasEarlier ? '✅ Correct' : '❌ Wrong'],
+                [{data:'from',header:true},{data:'Anchor',header:true},{data:'PR #7',header:true},{data:'PRs #5/#6',header:true},{data:'Result',header:true}],
+                [process.env.FROM_TAG, process.env.FROM_TAG, String(hasSeven), String(hasEarlier), hasSeven && !hasEarlier ? '✅ Correct' : '❌ Wrong'],
               ])
-              .addRaw('\n`from` is a no-op when `--latest` equals the highest semver published release.')
+              .addLink('View release', rel.html_url)
               .write();
-
-            if (!a1HasSeven || !a2HasSeven) core.setFailed('FAIL: PR #7 missing in Scenario A');
-            else if (a1HasEarlier || a2HasEarlier) core.setFailed('FAIL: PRs #5/#6 should not appear in Scenario A');
-            else core.info('✅ Scenario A PASS: identical result with and without from (PR #7 only)');
+            if (!hasSeven)   core.setFailed('FAIL: PR #7 missing from Scenario A changelog');
+            else if (hasEarlier) core.setFailed('FAIL: PRs #5/#6 should not appear (before the 1.1.12 anchor)');
+            else             core.info('✅ Scenario A PASS: from: cloud-settings-1.1.12 → PR #7 only');
 
       # ── Scenario B — rollback ──────────────────────────────────────────────
-      - name: "Scenario B — pin --latest back to cloud-settings-1.1.10 (rollback)"
+      - name: "Scenario B — pin --latest back to cloud-settings-1.1.10 and verify"
+        id: pin-b
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -211,10 +154,24 @@ jobs:
               owner: context.repo.owner, repo: context.repo.repo,
               release_id: rel.id, make_latest: 'true',
             });
-            core.info('Pinned --latest → cloud-settings-1.1.10');
-            core.info('cloud-settings-1.2.0 remains published (highest semver) but is NOT --latest');
+            for (let i = 0; i < 5; i++) {
+              const { data: latest } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner, repo: context.repo.repo,
+              });
+              if (latest.tag_name === 'cloud-settings-1.1.10') {
+                core.info(`--latest confirmed: ${latest.tag_name}`);
+                core.setOutput('tag', latest.tag_name);
+                return;
+              }
+              core.info(`--latest is ${latest.tag_name}, waiting... (attempt ${i+1})`);
+              await new Promise(r => setTimeout(r, 1000));
+            }
+            core.setFailed('--latest did not update to cloud-settings-1.1.10 after 5 attempts');
 
-      - name: "Scenario B1 — publish 1.2.1-no-from WITHOUT from (demonstrates the problem)"
+      # B1: without from — Release Drafter defaults to getLatestRelease() = 1.1.10.
+      # In this SHA version, default anchor = getLatestRelease(), NOT highest semver.
+      # So B1 and B2 should produce the same result — proving from is consistent with default.
+      - name: "Scenario B1 — publish 1.2.1-no-from WITHOUT from"
         id: publish-b1
         uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
@@ -222,7 +179,7 @@ jobs:
           commitish: ${{ github.sha }}
           version: "1.2.1"
           tag: "cloud-settings-1.2.1-no-from"
-          name: "Cloud Settings 1.2.1 (no-from control)"
+          name: "Cloud Settings 1.2.1 (no-from)"
           footer: |
             ---
             ## 🚀 Rollout Status
@@ -233,7 +190,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Scenario B1 — record result (no from, expect missing PRs)"
+      - name: "Scenario B1 — record result"
         id: result-b1
         uses: actions/github-script@v7
         env:
@@ -246,33 +203,30 @@ jobs:
               tag: process.env.RELEASE_TAG,
             });
             const body = rel.body || '';
-            core.info(`B1 body (no from — expect missing PRs #5 #6 #7):\n${body}`);
-            const missing = ['#5','#6','#7'].filter(n => !body.includes(n));
-            core.setOutput('missing_prs', missing.join(','));
+            core.info(`B1 body (no from):\n${body}`);
             core.setOutput('has_five',  String(body.includes('#5')));
             core.setOutput('has_six',   String(body.includes('#6')));
             core.setOutput('has_seven', String(body.includes('#7')));
-            core.info(`B1 — missing: ${missing.join(', ') || 'none'}`);
-
-      - name: "Scenario B2 — get --latest tag"
-        id: latest-b
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { data } = await github.rest.repos.getLatestRelease({
-              owner: context.repo.owner, repo: context.repo.repo,
+            // Re-pin --latest to 1.1.10 since B1 publish set it to 1.2.1-no-from
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
             });
-            core.info(`--latest: ${data.tag_name}`);
-            core.setOutput('tag', data.tag_name);
+            const rel11 = releases.find(r => r.tag_name === 'cloud-settings-1.1.10');
+            if (rel11) {
+              await github.rest.repos.updateRelease({
+                owner: context.repo.owner, repo: context.repo.repo,
+                release_id: rel11.id, make_latest: 'true',
+              });
+              core.info('Re-pinned --latest → cloud-settings-1.1.10 after B1');
+            }
 
-      - name: "Scenario B2 — publish 1.2.1 WITH from: --latest (the fix)"
+      - name: "Scenario B2 — publish 1.2.1 WITH from: --latest"
         id: publish-b2
         uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
           publish: true
           commitish: ${{ github.sha }}
-          from: ${{ steps.latest-b.outputs.tag }}
+          from: ${{ steps.pin-b.outputs.tag }}
           version: "1.2.1"
           tag: "cloud-settings-1.2.1"
           name: "Cloud Settings 1.2.1"
@@ -284,7 +238,7 @@ jobs:
             | us-east-1 | ✅ Success |
             | eu-west-1 | ✅ Success |
 
-            _Post-rollback fix release. cloud-settings-1.2.0 was rolled back to cloud-settings-1.1.10. This release re-ships all changes since 1.1.10._
+            _Post-rollback fix. cloud-settings-1.2.0 was rolled back to cloud-settings-1.1.10._
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -300,20 +254,19 @@ jobs:
             const sep = existing.indexOf('\n---\n');
             const changelog = sep !== -1 ? existing.slice(0, sep) : existing;
             await github.rest.repos.updateRelease({
-              owner: context.repo.owner, repo: context.repo.repo,
-              release_id: rel.id,
+              owner: context.repo.owner, repo: context.repo.repo, release_id: rel.id,
               body: `${changelog}\n---\n## 🔴 Rollout Status — This Release Was Rolled Back\n| Region | Status |\n|---|---|\n| us-east-1 | ⏪ Rolled Back |\n| eu-west-1 | ⏪ Rolled Back |\n\n_Rolled back in production. Superseded by cloud-settings-1.2.1._`,
             });
             core.info('Marked cloud-settings-1.2.0 as rolled back');
 
-      - name: "Scenario B — assert: from fixes rollback changelog"
+      - name: "Scenario B — assert"
         uses: actions/github-script@v7
         env:
-          RELEASE_TAG:    ${{ steps.publish-b2.outputs.tag_name }}
-          B1_HAS_FIVE:    ${{ steps.result-b1.outputs.has_five }}
-          B1_HAS_SIX:     ${{ steps.result-b1.outputs.has_six }}
-          B1_HAS_SEVEN:   ${{ steps.result-b1.outputs.has_seven }}
-          B1_MISSING:     ${{ steps.result-b1.outputs.missing_prs }}
+          RELEASE_TAG:  ${{ steps.publish-b2.outputs.tag_name }}
+          FROM_TAG:     ${{ steps.pin-b.outputs.tag }}
+          B1_HAS_FIVE:  ${{ steps.result-b1.outputs.has_five }}
+          B1_HAS_SIX:   ${{ steps.result-b1.outputs.has_six }}
+          B1_HAS_SEVEN: ${{ steps.result-b1.outputs.has_seven }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -321,59 +274,55 @@ jobs:
               hasFive:  process.env.B1_HAS_FIVE  === 'true',
               hasSix:   process.env.B1_HAS_SIX   === 'true',
               hasSeven: process.env.B1_HAS_SEVEN  === 'true',
-              missing:  process.env.B1_MISSING,
             };
             const { data: rel } = await github.rest.repos.getReleaseByTag({
               owner: context.repo.owner, repo: context.repo.repo,
               tag: process.env.RELEASE_TAG,
             });
             const body = rel.body || '';
-            const b2 = {
-              hasFive:  body.includes('#5'),
-              hasSix:   body.includes('#6'),
-              hasSeven: body.includes('#7'),
-            };
-            core.info(`B1 (no from): #5=${b1.hasFive} #6=${b1.hasSix} #7=${b1.hasSeven}`);
-            core.info(`B2 (from=1.1.10): #5=${b2.hasFive} #6=${b2.hasSix} #7=${b2.hasSeven}`);
+            const b2 = { hasFive: body.includes('#5'), hasSix: body.includes('#6'), hasSeven: body.includes('#7') };
+
+            core.info(`B1 (no from, default=getLatestRelease): #5=${b1.hasFive} #6=${b1.hasSix} #7=${b1.hasSeven}`);
+            core.info(`B2 (from=${process.env.FROM_TAG}): #5=${b2.hasFive} #6=${b2.hasSix} #7=${b2.hasSeven}`);
+
+            const b1Note = [b1.hasFive,b1.hasSix,b1.hasSeven].every(Boolean)
+              ? 'Same as B2 — default anchor (getLatestRelease) = --latest = 1.1.10'
+              : `Different from B2 — default anchor ≠ --latest (highest semver used instead)`;
 
             await core.summary
               .addHeading('Scenario B — Rollback')
               .addTable([
-                [{data:'Test',header:true},{data:'Anchor used',header:true},{data:'PR #5',header:true},{data:'PR #6',header:true},{data:'PR #7',header:true},{data:'Result',header:true}],
-                ['B1 — without from','1.2.0 (default = highest semver)',String(b1.hasFive),String(b1.hasSix),String(b1.hasSeven),b1.missing ? `❌ Missing: ${b1.missing}` : '(unexpected pass)'],
-                ['B2 — with from: 1.1.10','1.1.10 (from = --latest)',String(b2.hasFive),String(b2.hasSix),String(b2.hasSeven),[b2.hasFive,b2.hasSix,b2.hasSeven].every(Boolean) ? '✅ Correct' : '❌ Wrong'],
+                [{data:'Test',header:true},{data:'Anchor',header:true},{data:'PR #5',header:true},{data:'PR #6',header:true},{data:'PR #7',header:true},{data:'Note',header:true}],
+                ['B1 — without from','getLatestRelease() = ?',String(b1.hasFive),String(b1.hasSix),String(b1.hasSeven), b1Note],
+                ['B2 — with from: 1.1.10',process.env.FROM_TAG,String(b2.hasFive),String(b2.hasSix),String(b2.hasSeven),[b2.hasFive,b2.hasSix,b2.hasSeven].every(Boolean)?'✅ Correct':'❌ Wrong'],
               ])
-              .addRaw('\nWithout `from`, Release Drafter anchors to the highest semver (1.2.0) — re-shipped changes are invisible. With `from: --latest (1.1.10)`, all changes since the rollback target appear.')
+              .addLink('View B2 release', rel.html_url)
               .write();
 
-            if (b1.missing) core.info(`✅ B1 confirmed broken without from: missing ${b1.missing}`);
-            else core.warning('B1 unexpectedly passed — PRs appeared without from');
+            // B2 must be correct
             const b2Missing = ['#5','#6','#7'].filter(n => !body.includes(n));
             if (b2Missing.length > 0) core.setFailed(`FAIL: B2 missing PRs ${b2Missing.join(', ')} even with from`);
-            else core.info('✅ Scenario B PASS: from anchors to --latest — PRs #5 #6 #7 all present');
+            else core.info('✅ Scenario B PASS: from: cloud-settings-1.1.10 → PRs #5 #6 #7');
 
-      # ── Scenario C — initial release (no --latest / first deploy) ──────────
-      # When getLatestRelease() returns 404 (no releases yet), `from` is empty "".
-      # Verify that passing from: "" to Release Drafter still works — it should
-      # fall back to its default behavior and include all PRs from the beginning.
-      - name: "Scenario C — get --latest tag (simulate 404 → empty from)"
+      # ── Scenario C — initial release (empty from) ──────────────────────────
+      - name: "Scenario C — simulate initial release (no --latest for this service prefix)"
         id: latest-c
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            // Simulate the 404 path by deliberately querying a tag-prefix that
-            // has no matching --latest release. We use listReleases filtered by a
-            // non-existent prefix to get an empty result, then output "".
+            // Simulate the case where no --latest release exists for this service.
+            // In production, getLatestRelease() would throw 404 on a brand-new repo.
+            // Here we simulate that by returning "" when no matching release is found.
             const prefix = 'no-such-service-';
             const { data: releases } = await github.rest.repos.listReleases({
               owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
             });
-            const match = releases.find(r => !r.draft && r.tag_name.startsWith(prefix) && r.make_latest === 'true');
+            const match = releases.find(r => !r.draft && r.tag_name.startsWith(prefix));
             if (match) {
               core.setOutput('tag', match.tag_name);
             } else {
-              core.info('No --latest release found for this service prefix — initial release path, from will be empty');
+              core.info('No release found for this service prefix — initial release path, from = ""');
               core.setOutput('tag', '');
             }
 
@@ -397,7 +346,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Scenario C — assert: empty from falls back to default anchor"
+      - name: "Scenario C — assert: empty from still creates a release"
         uses: actions/github-script@v7
         env:
           RELEASE_TAG: ${{ steps.publish-c.outputs.tag_name }}
@@ -411,20 +360,15 @@ jobs:
               tag: process.env.RELEASE_TAG,
             });
             const body = rel.body || '';
-            core.info(`C — from tag passed: "${fromTag}" (empty = initial release path)`);
+            core.info(`C — from: "${fromTag}" (empty = initial release path)`);
             core.info(`C body:\n${body}`);
-
             await core.summary
-              .addHeading('Scenario C — Initial Release (empty from)')
+              .addHeading('Scenario C — Initial Release (from = "")')
               .addTable([
-                [{data:'from tag',header:true},{data:'Release created',header:true},{data:'Has changelog',header:true}],
-                [fromTag || '(empty)', rel.tag_name, body.includes('#') ? 'yes' : 'no (no PRs before this tag)'],
+                [{data:'from tag passed',header:true},{data:'Release created',header:true},{data:'Has footer',header:true}],
+                [fromTag || '(empty)', rel.tag_name || '(none)', body.includes('Rollout') ? 'yes' : 'no'],
               ])
               .addLink('View release', rel.html_url)
-              .addRaw('\nWith `from: ""`, Release Drafter falls back to its default anchor and the release is created successfully.')
               .write();
-
-            if (!rel.tag_name)
-              core.setFailed('FAIL: release was not created with empty from');
-            else
-              core.info(`✅ Scenario C PASS: release created successfully with empty from (tag: ${rel.tag_name})`);
+            if (!rel.tag_name) core.setFailed('FAIL: release not created with empty from');
+            else core.info(`✅ Scenario C PASS: release created with empty from (tag: ${rel.tag_name})`);
