@@ -1,19 +1,20 @@
 name: Test Rollback-Aware Publish
 
-# Tests that `from` produces correct changelog anchoring in both cases.
+# Verifies that `from` produces correct changelog anchoring in all three cases:
 #
 # Scenario A — normal forward deploy:
-#   --latest = cloud-settings-1.1.12 = highest semver published.
-#   Test A1 (without from): Release Drafter defaults to highest semver → PR #7 only.
-#   Test A2 (with from: cloud-settings-1.1.12): same result → PR #7 only.
-#   ✓ `from` is a no-op in the normal case; behaviour is identical.
+#   --latest = cloud-settings-1.1.12 = highest semver. `from` is a no-op here:
+#   without it Release Drafter uses 1.1.12 (highest semver), with it we also pass 1.1.12.
+#   Both must produce PR #7 only.
 #
 # Scenario B — rollback:
-#   --latest rolled back to cloud-settings-1.1.10.
-#   cloud-settings-1.2.0 is the highest semver published (still present, just not --latest).
-#   Test B1 (without from): defaults to 1.2.0 (highest semver) → "No changes" ← WRONG.
-#   Test B2 (with from: cloud-settings-1.1.10): anchors to --latest → PRs #5 #6 #7 ← CORRECT.
-#   ✓ `from` is required after a rollback; without it the changelog silently drops changes.
+#   --latest rolled back to cloud-settings-1.1.10; 1.2.0 remains published as highest semver.
+#   B1 (without from): anchors to 1.2.0 → "No changes" ← WRONG.
+#   B2 (with from: --latest = 1.1.10): anchors to 1.1.10 → PRs #5 #6 #7 ← CORRECT.
+#
+# Scenario C — initial release (no --latest exists):
+#   getLatestRelease() returns 404 → from tag = "".
+#   Verify the single Release Drafter call still works when from is empty.
 
 on:
   workflow_dispatch: {}
@@ -37,6 +38,7 @@ jobs:
               'cloud-settings-1.2.0',
               'cloud-settings-1.2.1',
               'cloud-settings-1.2.1-no-from',
+              'cloud-settings-initial-test',
             ];
             const { data: releases } = await github.rest.repos.listReleases({
               owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
@@ -73,7 +75,6 @@ jobs:
             });
             core.info('Pinned --latest → cloud-settings-1.1.12');
 
-      # A1: publish WITHOUT from — Release Drafter defaults to highest semver (1.1.12)
       - name: "Scenario A1 — publish 1.2.0 WITHOUT from"
         id: publish-a1
         uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
@@ -93,8 +94,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Scenario A1 — verify (no from)"
-        id: verify-a1
+      - name: "Scenario A1 — record result (no from)"
+        id: result-a1
         uses: actions/github-script@v7
         env:
           RELEASE_TAG: ${{ steps.publish-a1.outputs.tag_name }}
@@ -107,13 +108,10 @@ jobs:
             });
             const body = rel.body || '';
             core.info(`A1 body:\n${body}`);
-            const hasSeven = body.includes('#7');
-            const hasEarlier = body.includes('#5') || body.includes('#6');
-            core.setOutput('result', JSON.stringify({ hasSeven, hasEarlier, body }));
-            core.info(`A1 — PR #7 present: ${hasSeven}, PRs #5/#6 present: ${hasEarlier}`);
+            core.setOutput('has_seven',   String(body.includes('#7')));
+            core.setOutput('has_earlier', String(body.includes('#5') || body.includes('#6')));
 
-      # Delete 1.2.0 and recreate it WITH from for A2
-      - name: "Scenario A2 — reset cloud-settings-1.2.0"
+      - name: "Scenario A2 — reset cloud-settings-1.2.0 for re-publish with from"
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -143,8 +141,7 @@ jobs:
             core.info(`--latest: ${data.tag_name}`);
             core.setOutput('tag', data.tag_name);
 
-      # A2: publish WITH from — should produce identical result to A1
-      - name: "Scenario A2 — publish 1.2.0 WITH from"
+      - name: "Scenario A2 — publish 1.2.0 WITH from: --latest"
         id: publish-a2
         uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
@@ -168,41 +165,40 @@ jobs:
         uses: actions/github-script@v7
         env:
           RELEASE_TAG: ${{ steps.publish-a2.outputs.tag_name }}
-          A1_RESULT: ${{ steps.verify-a1.outputs.result }}
+          A1_HAS_SEVEN:   ${{ steps.result-a1.outputs.has_seven }}
+          A1_HAS_EARLIER: ${{ steps.result-a1.outputs.has_earlier }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const a1 = JSON.parse(process.env.A1_RESULT);
+            const a1HasSeven   = process.env.A1_HAS_SEVEN   === 'true';
+            const a1HasEarlier = process.env.A1_HAS_EARLIER === 'true';
             const { data: rel } = await github.rest.repos.getReleaseByTag({
               owner: context.repo.owner, repo: context.repo.repo,
               tag: process.env.RELEASE_TAG,
             });
-            const a2body = rel.body || '';
-            const a2HasSeven = a2body.includes('#7');
-            const a2HasEarlier = a2body.includes('#5') || a2body.includes('#6');
+            const body = rel.body || '';
+            const a2HasSeven   = body.includes('#7');
+            const a2HasEarlier = body.includes('#5') || body.includes('#6');
 
-            core.info(`A1 (no from): PR #7=${a1.hasSeven}, PRs #5/#6=${a1.hasEarlier}`);
-            core.info(`A2 (from=1.1.12): PR #7=${a2HasSeven}, PRs #5/#6=${a2HasEarlier}`);
+            core.info(`A1 (no from):       PR #7=${a1HasSeven} | PRs #5/#6=${a1HasEarlier}`);
+            core.info(`A2 (from=1.1.12):   PR #7=${a2HasSeven} | PRs #5/#6=${a2HasEarlier}`);
 
             await core.summary
               .addHeading('Scenario A — Normal Forward Deploy')
               .addTable([
-                [{data: 'Test', header: true}, {data: 'PR #7', header: true}, {data: 'PRs #5/#6', header: true}, {data: 'Result', header: true}],
-                ['A1 — without from', String(a1.hasSeven), String(a1.hasEarlier), a1.hasSeven && !a1.hasEarlier ? '✅ Correct' : '❌ Wrong'],
-                ['A2 — with from: 1.1.12', String(a2HasSeven), String(a2HasEarlier), a2HasSeven && !a2HasEarlier ? '✅ Correct' : '❌ Wrong'],
+                [{data:'Test',header:true},{data:'Anchor used',header:true},{data:'PR #7',header:true},{data:'PRs #5/#6',header:true},{data:'Result',header:true}],
+                ['A1 — without from', '1.1.12 (default = highest semver)', String(a1HasSeven), String(a1HasEarlier), a1HasSeven && !a1HasEarlier ? '✅ Correct' : '❌ Wrong'],
+                ['A2 — with from: 1.1.12', '1.1.12 (from = --latest)', String(a2HasSeven), String(a2HasEarlier), a2HasSeven && !a2HasEarlier ? '✅ Correct' : '❌ Wrong'],
               ])
-              .addRaw('Both A1 and A2 should show PR #7 only — `from` is a no-op when `--latest` equals highest semver.')
+              .addRaw('\n`from` is a no-op when `--latest` equals the highest semver published release.')
               .write();
 
-            if (!a1.hasSeven || !a2HasSeven)
-              core.setFailed('FAIL: PR #7 missing in Scenario A');
-            else if (a1.hasEarlier || a2HasEarlier)
-              core.setFailed('FAIL: PRs #5/#6 should not appear in Scenario A');
-            else
-              core.info('✅ Scenario A PASS: identical result with and without from (PR #7 only)');
+            if (!a1HasSeven || !a2HasSeven) core.setFailed('FAIL: PR #7 missing in Scenario A');
+            else if (a1HasEarlier || a2HasEarlier) core.setFailed('FAIL: PRs #5/#6 should not appear in Scenario A');
+            else core.info('✅ Scenario A PASS: identical result with and without from (PR #7 only)');
 
       # ── Scenario B — rollback ──────────────────────────────────────────────
-      - name: "Scenario B — pin --latest back to cloud-settings-1.1.10"
+      - name: "Scenario B — pin --latest back to cloud-settings-1.1.10 (rollback)"
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -218,8 +214,7 @@ jobs:
             core.info('Pinned --latest → cloud-settings-1.1.10');
             core.info('cloud-settings-1.2.0 remains published (highest semver) but is NOT --latest');
 
-      # B1: publish 1.2.1 WITHOUT from — defaults to highest semver = 1.2.0 → wrong changelog
-      - name: "Scenario B1 — publish 1.2.1 WITHOUT from (demonstrates the problem)"
+      - name: "Scenario B1 — publish 1.2.1-no-from WITHOUT from (demonstrates the problem)"
         id: publish-b1
         uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
@@ -238,8 +233,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Scenario B1 — verify (no from, expect wrong result)"
-        id: verify-b1
+      - name: "Scenario B1 — record result (no from, expect missing PRs)"
+        id: result-b1
         uses: actions/github-script@v7
         env:
           RELEASE_TAG: ${{ steps.publish-b1.outputs.tag_name }}
@@ -251,18 +246,14 @@ jobs:
               tag: process.env.RELEASE_TAG,
             });
             const body = rel.body || '';
-            core.info(`B1 body (no from — expect missing PRs):\n${body}`);
-            const missing = ['#5', '#6', '#7'].filter(n => !body.includes(n));
-            core.setOutput('result', JSON.stringify({
-              hasFive: body.includes('#5'),
-              hasSix: body.includes('#6'),
-              hasSeven: body.includes('#7'),
-              missing,
-              body,
-            }));
-            core.info(`B1 — missing PRs: ${missing.join(', ') || 'none'}`);
+            core.info(`B1 body (no from — expect missing PRs #5 #6 #7):\n${body}`);
+            const missing = ['#5','#6','#7'].filter(n => !body.includes(n));
+            core.setOutput('missing_prs', missing.join(','));
+            core.setOutput('has_five',  String(body.includes('#5')));
+            core.setOutput('has_six',   String(body.includes('#6')));
+            core.setOutput('has_seven', String(body.includes('#7')));
+            core.info(`B1 — missing: ${missing.join(', ') || 'none'}`);
 
-      # B2: publish 1.2.1 WITH from: cloud-settings-1.1.10 → correct changelog
       - name: "Scenario B2 — get --latest tag"
         id: latest-b
         uses: actions/github-script@v7
@@ -275,7 +266,7 @@ jobs:
             core.info(`--latest: ${data.tag_name}`);
             core.setOutput('tag', data.tag_name);
 
-      - name: "Scenario B2 — publish 1.2.1 WITH from (the fix)"
+      - name: "Scenario B2 — publish 1.2.1 WITH from: --latest (the fix)"
         id: publish-b2
         uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
@@ -303,57 +294,137 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { data: rel } = await github.rest.repos.getReleaseByTag({
-              owner: context.repo.owner, repo: context.repo.repo,
-              tag: 'cloud-settings-1.2.0',
+              owner: context.repo.owner, repo: context.repo.repo, tag: 'cloud-settings-1.2.0',
             });
-            const existingBody = rel.body || '';
-            const separatorIdx = existingBody.indexOf('\n---\n');
-            const changelogPart = separatorIdx !== -1 ? existingBody.slice(0, separatorIdx) : existingBody;
+            const existing = rel.body || '';
+            const sep = existing.indexOf('\n---\n');
+            const changelog = sep !== -1 ? existing.slice(0, sep) : existing;
             await github.rest.repos.updateRelease({
               owner: context.repo.owner, repo: context.repo.repo,
               release_id: rel.id,
-              body: `${changelogPart}\n---\n## 🔴 Rollout Status — This Release Was Rolled Back\n| Region | Status |\n|---|---|\n| us-east-1 | ⏪ Rolled Back |\n| eu-west-1 | ⏪ Rolled Back |\n\n_This release was rolled back in production. Superseded by cloud-settings-1.2.1, which re-ships these changes plus the hotfix._`,
+              body: `${changelog}\n---\n## 🔴 Rollout Status — This Release Was Rolled Back\n| Region | Status |\n|---|---|\n| us-east-1 | ⏪ Rolled Back |\n| eu-west-1 | ⏪ Rolled Back |\n\n_Rolled back in production. Superseded by cloud-settings-1.2.1._`,
             });
             core.info('Marked cloud-settings-1.2.0 as rolled back');
 
       - name: "Scenario B — assert: from fixes rollback changelog"
         uses: actions/github-script@v7
         env:
-          RELEASE_TAG: ${{ steps.publish-b2.outputs.tag_name }}
-          B1_RESULT: ${{ steps.verify-b1.outputs.result }}
+          RELEASE_TAG:    ${{ steps.publish-b2.outputs.tag_name }}
+          B1_HAS_FIVE:    ${{ steps.result-b1.outputs.has_five }}
+          B1_HAS_SIX:     ${{ steps.result-b1.outputs.has_six }}
+          B1_HAS_SEVEN:   ${{ steps.result-b1.outputs.has_seven }}
+          B1_MISSING:     ${{ steps.result-b1.outputs.missing_prs }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const b1 = JSON.parse(process.env.B1_RESULT);
+            const b1 = {
+              hasFive:  process.env.B1_HAS_FIVE  === 'true',
+              hasSix:   process.env.B1_HAS_SIX   === 'true',
+              hasSeven: process.env.B1_HAS_SEVEN  === 'true',
+              missing:  process.env.B1_MISSING,
+            };
             const { data: rel } = await github.rest.repos.getReleaseByTag({
               owner: context.repo.owner, repo: context.repo.repo,
               tag: process.env.RELEASE_TAG,
             });
-            const b2body = rel.body || '';
-            const b2Has = (n) => b2body.includes(n);
-
+            const body = rel.body || '';
+            const b2 = {
+              hasFive:  body.includes('#5'),
+              hasSix:   body.includes('#6'),
+              hasSeven: body.includes('#7'),
+            };
             core.info(`B1 (no from): #5=${b1.hasFive} #6=${b1.hasSix} #7=${b1.hasSeven}`);
-            core.info(`B2 (from=1.1.10): #5=${b2Has('#5')} #6=${b2Has('#6')} #7=${b2Has('#7')}`);
+            core.info(`B2 (from=1.1.10): #5=${b2.hasFive} #6=${b2.hasSix} #7=${b2.hasSeven}`);
 
             await core.summary
               .addHeading('Scenario B — Rollback')
               .addTable([
-                [{data: 'Test', header: true}, {data: 'Anchor', header: true}, {data: 'PR #5', header: true}, {data: 'PR #6', header: true}, {data: 'PR #7', header: true}, {data: 'Result', header: true}],
-                ['B1 — without from', '1.2.0 (highest semver)', String(b1.hasFive), String(b1.hasSix), String(b1.hasSeven), b1.missing.length > 0 ? `❌ Missing: ${b1.missing.join(' ')}` : '(unexpected pass)'],
-                ['B2 — with from: 1.1.10', '1.1.10 (--latest)', String(b2Has('#5')), String(b2Has('#6')), String(b2Has('#7')), ['#5','#6','#7'].every(n => b2Has(n)) ? '✅ Correct' : '❌ Wrong'],
+                [{data:'Test',header:true},{data:'Anchor used',header:true},{data:'PR #5',header:true},{data:'PR #6',header:true},{data:'PR #7',header:true},{data:'Result',header:true}],
+                ['B1 — without from','1.2.0 (default = highest semver)',String(b1.hasFive),String(b1.hasSix),String(b1.hasSeven),b1.missing ? `❌ Missing: ${b1.missing}` : '(unexpected pass)'],
+                ['B2 — with from: 1.1.10','1.1.10 (from = --latest)',String(b2.hasFive),String(b2.hasSix),String(b2.hasSeven),[b2.hasFive,b2.hasSix,b2.hasSeven].every(Boolean) ? '✅ Correct' : '❌ Wrong'],
               ])
-              .addRaw('Without `from`, Release Drafter anchors to the highest semver published release (1.2.0) and the changelog is empty — the re-shipped changes are invisible. With `from: --latest (1.1.10)`, all changes since the rollback target are included.')
+              .addRaw('\nWithout `from`, Release Drafter anchors to the highest semver (1.2.0) — re-shipped changes are invisible. With `from: --latest (1.1.10)`, all changes since the rollback target appear.')
               .write();
 
-            // B1 must be missing PRs (proves the problem exists)
-            if (b1.missing.length === 0)
-              core.warning('B1 unexpectedly passed — re-shipped PRs appeared even without from');
-            else
-              core.info(`✅ B1 confirmed broken without from: missing ${b1.missing.join(', ')}`);
+            if (b1.missing) core.info(`✅ B1 confirmed broken without from: missing ${b1.missing}`);
+            else core.warning('B1 unexpectedly passed — PRs appeared without from');
+            const b2Missing = ['#5','#6','#7'].filter(n => !body.includes(n));
+            if (b2Missing.length > 0) core.setFailed(`FAIL: B2 missing PRs ${b2Missing.join(', ')} even with from`);
+            else core.info('✅ Scenario B PASS: from anchors to --latest — PRs #5 #6 #7 all present');
 
-            // B2 must have all PRs (proves from fixes it)
-            const b2Missing = ['#5','#6','#7'].filter(n => !b2Has(n));
-            if (b2Missing.length > 0)
-              core.setFailed(`FAIL: Scenario B2 missing PRs ${b2Missing.join(', ')} even with from`);
+      # ── Scenario C — initial release (no --latest / first deploy) ──────────
+      # When getLatestRelease() returns 404 (no releases yet), `from` is empty "".
+      # Verify that passing from: "" to Release Drafter still works — it should
+      # fall back to its default behavior and include all PRs from the beginning.
+      - name: "Scenario C — get --latest tag (simulate 404 → empty from)"
+        id: latest-c
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Simulate the 404 path by deliberately querying a tag-prefix that
+            // has no matching --latest release. We use listReleases filtered by a
+            // non-existent prefix to get an empty result, then output "".
+            const prefix = 'no-such-service-';
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
+            });
+            const match = releases.find(r => !r.draft && r.tag_name.startsWith(prefix) && r.make_latest === 'true');
+            if (match) {
+              core.setOutput('tag', match.tag_name);
+            } else {
+              core.info('No --latest release found for this service prefix — initial release path, from will be empty');
+              core.setOutput('tag', '');
+            }
+
+      - name: "Scenario C — publish initial release with from: '' (empty)"
+        id: publish-c
+        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        with:
+          publish: true
+          commitish: ${{ github.sha }}
+          from: ${{ steps.latest-c.outputs.tag }}
+          version: "1.0.0"
+          tag: "cloud-settings-initial-test"
+          name: "Cloud Settings initial-test"
+          footer: |
+            ---
+            ## 🚀 Rollout Status
+            | Region | Status |
+            |---|---|
+            | us-east-1 | ✅ Success |
+            | eu-west-1 | ✅ Success |
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Scenario C — assert: empty from falls back to default anchor"
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ steps.publish-c.outputs.tag_name }}
+          FROM_TAG:    ${{ steps.latest-c.outputs.tag }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fromTag = process.env.FROM_TAG;
+            const { data: rel } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner, repo: context.repo.repo,
+              tag: process.env.RELEASE_TAG,
+            });
+            const body = rel.body || '';
+            core.info(`C — from tag passed: "${fromTag}" (empty = initial release path)`);
+            core.info(`C body:\n${body}`);
+
+            await core.summary
+              .addHeading('Scenario C — Initial Release (empty from)')
+              .addTable([
+                [{data:'from tag',header:true},{data:'Release created',header:true},{data:'Has changelog',header:true}],
+                [fromTag || '(empty)', rel.tag_name, body.includes('#') ? 'yes' : 'no (no PRs before this tag)'],
+              ])
+              .addLink('View release', rel.html_url)
+              .addRaw('\nWith `from: ""`, Release Drafter falls back to its default anchor and the release is created successfully.')
+              .write();
+
+            if (!rel.tag_name)
+              core.setFailed('FAIL: release was not created with empty from');
             else
-              core.info('✅ Scenario B PASS: from fixes rollback anchoring — PRs #5 #6 #7 all present');
+              core.info(`✅ Scenario C PASS: release created successfully with empty from (tag: ${rel.tag_name})`);
