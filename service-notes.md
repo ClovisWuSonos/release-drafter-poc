@@ -19,3 +19,4 @@ feat: add notification service
 feat: add user preferences panel
 fix: resolve critical startup crash after rollback
 feat: add payment service integration
+feat: add search API endpoint
