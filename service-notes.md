@@ -16,3 +16,4 @@ feat: add user authentication endpoint
 feat: add dark mode support
 fix: resolve critical startup crash
 feat: add notification service
+feat: add user preferences panel
