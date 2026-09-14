@@ -21,3 +21,4 @@ fix: resolve critical startup crash after rollback
 feat: add payment service integration
 feat: add search API endpoint
 feat: add analytics dashboard
+feat: add CSV export feature
