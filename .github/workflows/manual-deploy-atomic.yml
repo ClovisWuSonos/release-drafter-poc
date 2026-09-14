@@ -1,0 +1,66 @@
+name: Manual Deploy (Atomic)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (e.g. 1.0.7) — must match an existing cloud-settings-* tag'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag SHA
+        id: pin
+        run: |
+          git fetch --tags --force
+          SHA=$(git rev-parse "cloud-settings-${{ inputs.version }}")
+          echo "cloud-settings-${{ inputs.version }} -> ${SHA}"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Get rollback-aware anchor
+        id: anchor
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              const { data } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              core.info(`Latest release: ${data.tag_name}`);
+              core.setOutput('tag', data.tag_name);
+            } catch (e) {
+              core.setOutput('tag', '');
+            }
+
+      - name: Publish release
+        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        with:
+          publish: true
+          commitish: ${{ steps.pin.outputs.sha }}
+          from: ${{ steps.anchor.outputs.tag }}
+          tag: cloud-settings-${{ inputs.version }}
+          version: ${{ inputs.version }}
+          footer: |
+            ## 🚀 Rollout Status
+            us-east-1: ✅ Deployed
+            eu-west-1: ✅ Deployed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mark as latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "cloud-settings-${{ inputs.version }}" --latest
+          echo "cloud-settings-${{ inputs.version }} marked as latest."
