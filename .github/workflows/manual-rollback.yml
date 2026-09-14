@@ -28,36 +28,21 @@ jobs:
           script: |
             const rollbackTo = `cloud-settings-${process.env.ROLLBACK_TO}`;
 
-            // Get current --latest release (the one being rolled back)
-            const { data: latest } = await github.rest.repos.getLatestRelease({
+            const { data: release } = await github.rest.repos.getLatestRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
             });
-            core.info(`Rolling back from: ${latest.tag_name} → ${rollbackTo}`);
 
-            if (latest.tag_name === rollbackTo) {
-              core.setFailed(`Already at ${rollbackTo} — nothing to roll back.`);
-              return;
-            }
-
-            // Replace the Rollout Status section in the release body
-            const rolledBackStatus =
-              `## 🚀 Rollout Status\n` +
-              `us-east-1: ⏪ Rolled Back → ${rollbackTo}\n` +
-              `eu-west-1: ⏪ Rolled Back → ${rollbackTo}`;
-
-            const updatedBody = latest.body.replace(
-              /## 🚀 Rollout Status[\s\S]*/,
-              rolledBackStatus
-            );
+            const status = `## 🚀 Rollout Status\nus-east-1: ⏪ Rolled Back → ${rollbackTo}\neu-west-1: ⏪ Rolled Back → ${rollbackTo}`;
+            const body = release.body.replace(/## 🚀 Rollout Status[\s\S]*/, status);
 
             await github.rest.repos.updateRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              release_id: latest.id,
-              body: updatedBody,
+              release_id: release.id,
+              body,
             });
-            core.info(`Updated ${latest.tag_name} rollout status to Rolled Back`);
+            core.info(`${release.tag_name} marked as Rolled Back → ${rollbackTo}`);
 
       - name: Re-point --latest to rollback target
         env:
