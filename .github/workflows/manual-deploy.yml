@@ -197,16 +197,53 @@ jobs:
           echo "cloud-settings-${{ inputs.version }} -> ${SHA}"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
+      # Step D-anchor: get the rollback-aware changelog anchor.
+      # repos.getLatestRelease() returns the --latest release, which
+      # promote-release-to-latest manages correctly: after a rollback it points
+      # to the rolled-back-to version, not the superseded one still published
+      # at a higher semver.
+      - name: "Step D-anchor - Get rollback-aware changelog anchor"
+        id: anchor
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              const { data } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              core.info(`Latest release: ${data.tag_name}`);
+              core.setOutput('tag', data.tag_name);
+            } catch (e) {
+              core.info('No releases yet — publishing without from anchor');
+              core.setOutput('tag', '');
+            }
+
       # Step D: publish the release for the tag we were actually deploying,
-      # not whatever main/the draft looks like right now. `commitish` is
-      # what actually pins the changelog to that commit (see Step D-pin);
-      # `tag`/`version` alone do not.
+      # not whatever main/the draft looks like right now. `commitish` pins the
+      # changelog to the exact deployed SHA. `from` anchors the changelog to
+      # --latest, ensuring that after a rollback all re-shipped changes are
+      # included — not just the fix. `footer` re-attaches the rollout table.
       #
-      # `footer` re-attaches the rollout table Step B computed, because
-      # release-drafter fully regenerates the release body from the template
-      # on every run (it does NOT preserve manual PATCHes).
+      # Two conditional steps because passing from: "" would cause release-drafter
+      # to use an empty string as a git ref. On first release (no --latest yet),
+      # from must be omitted entirely.
       - name: "Step D - Publish the release for this version"
-        uses: release-drafter/release-drafter@v6
+        if: steps.anchor.outputs.tag != ''
+        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        with:
+          publish: true
+          version: ${{ inputs.version }}
+          tag: cloud-settings-${{ inputs.version }}
+          commitish: ${{ steps.pin.outputs.sha }}
+          from: ${{ steps.anchor.outputs.tag }}
+          footer: ${{ steps.rollout.outputs.rollout_table }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Step D - Publish the release (first release — no anchor)"
+        if: steps.anchor.outputs.tag == ''
+        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
           publish: true
           version: ${{ inputs.version }}
