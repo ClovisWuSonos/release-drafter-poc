@@ -22,3 +22,4 @@ feat: add payment service integration
 feat: add search API endpoint
 feat: add analytics dashboard
 feat: add CSV export feature
+fix: resolve memory leak in analytics module
