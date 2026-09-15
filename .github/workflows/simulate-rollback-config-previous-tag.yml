@@ -330,19 +330,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Rel 3 WRONG — publish"
-        uses: actions/github-script@v7
-        env:
-          RELEASE_ID: ${{ steps.draft-102-wrong.outputs.id }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner, repo: context.repo.repo,
-              release_id: Number(process.env.RELEASE_ID),
-              draft: false,
-            });
-            core.info(`Published ${process.env.TAG_102_WRONG}`);
+      # Keep cprev-1.0.2-wrong as a DRAFT so it doesn't become the anchor
+      # for the cprev-1.0.2-right step. If published, right would see
+      # cprev-1.0.2-wrong as the highest-semver release and anchor there
+      # (same SHA → no commits → no changes).
+      - name: "Rel 3 WRONG — leave as draft (intentional)"
+        run: echo "cprev-1.0.2-wrong left as draft — keeps cprev-1.0.1 as the anchor for the right step"
 
       # ════════════════════════════════════════════════════════════════════════
       # MANUAL OPERATION — update config to add previous-tag: cprev-1.0.0
@@ -476,6 +469,7 @@ jobs:
 
             // cprev-1.0.2-wrong: from: cprev-1.0.1 (simulates wrong anchor after rollback)
             // Should have #23+ but NOT #19-#22 (missing the rolled-back range)
+            // This release is kept as a draft so it doesn't pollute the right anchor.
             const wrong_has_new   = r102_wrong.has(23);
             const wrong_misses_rb = !r102_wrong.has(19) && !r102_wrong.has(22);
             const r102_wrong_ok   = wrong_has_new && wrong_misses_rb;
