@@ -32,6 +32,7 @@ env:
   TAG_100: sim-1.0.0
   TAG_101: sim-1.0.1
   TAG_102: sim-1.0.2
+  TAG_102_V6: sim-1.0.2-v6
   COMMIT_100: 1fcac8571106b81b596912759203cf4f4ee3d392
   COMMIT_101: f3cd383ab46b5b69c14020974421f394b1560a01
   RD_SHA: f259c0ada5376557cd49e74487398301fab5287a
@@ -47,7 +48,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const tags = [process.env.TAG_100, process.env.TAG_101, process.env.TAG_102];
+            const tags = [process.env.TAG_100, process.env.TAG_101, process.env.TAG_102, process.env.TAG_102_V6];
             const { data: releases } = await github.rest.repos.listReleases({
               owner: context.repo.owner, repo: context.repo.repo, per_page: 100,
             });
@@ -297,6 +298,49 @@ jobs:
             core.info(`Published sim-1.0.2 and marked --latest`);
 
       # ════════════════════════════════════════════════════════════════════════
+      # RELEASE 3b — sim-1.0.2-v6 (same scenario, official @v6 + previous-tag)
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: "Rel 3b — create tag sim-1.0.2-v6 at HEAD"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.git.createRef({
+              owner: context.repo.owner, repo: context.repo.repo,
+              ref: `refs/tags/${process.env.TAG_102_V6}`,
+              sha: context.sha,
+            });
+            core.info(`Tagged ${process.env.TAG_102_V6} at ${context.sha}`);
+
+      - name: "Rel 3b — draft changelog (@v6 + previous-tag: sim-1.0.0)"
+        id: draft-102-v6
+        uses: release-drafter/release-drafter@v6
+        with:
+          publish: false
+          commitish: ${{ github.sha }}
+          tag: ${{ env.TAG_102_V6 }}
+          version: "1.0.2"
+          name: "Sim 1.0.2-v6"
+          previous-tag: ${{ env.TAG_100 }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Rel 3b — publish"
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ steps.draft-102-v6.outputs.id }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              release_id: Number(process.env.RELEASE_ID),
+              draft: false,
+            });
+            core.info(`Published sim-1.0.2-v6`);
+
+      # ════════════════════════════════════════════════════════════════════════
       # ASSERT + SUMMARY
       # ════════════════════════════════════════════════════════════════════════
 
@@ -306,6 +350,7 @@ jobs:
           ID_100: ${{ steps.draft-100.outputs.id }}
           ID_101: ${{ steps.draft-101.outputs.id }}
           ID_102: ${{ steps.draft-102.outputs.id }}
+          ID_102_V6: ${{ steps.draft-102-v6.outputs.id }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -318,44 +363,46 @@ jobs:
               return { url: rel.html_url, tag: rel.tag_name, body, has: (n) => body.includes(`#${n}`) };
             };
 
-            const r100 = await get(process.env.ID_100);
-            const r101 = await get(process.env.ID_101);
-            const r102 = await get(process.env.ID_102);
+            const r100    = await get(process.env.ID_100);
+            const r101    = await get(process.env.ID_101);
+            const r102    = await get(process.env.ID_102);
+            const r102_v6 = await get(process.env.ID_102_V6);
 
             core.info(`sim-1.0.1 body:\n${r101.body}`);
-            core.info(`sim-1.0.2 body:\n${r102.body}`);
+            core.info(`sim-1.0.2 (SHA+from) body:\n${r102.body}`);
+            core.info(`sim-1.0.2-v6 (v6+previous-tag) body:\n${r102_v6.body}`);
 
-            // sim-1.0.1: previous-tag=sim-1.0.0 → should include #16, #17 but NOT #18
-            const r101_correct = r101.has(16) && r101.has(17) && !r101.has(18);
-            // sim-1.0.2: previous-tag=sim-1.0.0 (rollback target) → must include #16, #17, #18
-            const r102_correct = r102.has(16) && r102.has(17) && r102.has(18);
-            const rolledBack = r101.body.includes('rolled-back');
+            const r101_correct    = r101.has(16) && r101.has(17) && !r101.has(18);
+            const r102_correct    = r102.has(16) && r102.has(17) && r102.has(18);
+            const r102_v6_correct = r102_v6.has(16) && r102_v6.has(17) && r102_v6.has(18);
+            const rolledBack      = r101.body.includes('rolled-back');
 
             const fmt = (b) => b ? '✅' : '❌';
+            const verdict = (ok) => ok ? '✅ correct (anchored at sim-1.0.0)' : '❌ wrong (missed #16/#17)';
 
             await core.summary
-              .addHeading('Rollback Simulation — previous-tag verification')
+              .addHeading('Rollback Simulation — from vs previous-tag')
               .addTable([
-                [{data:'Release',header:true},{data:'Anchor',header:true},{data:'PR #16',header:true},{data:'PR #17',header:true},{data:'PR #18',header:true},{data:'Rollout Status',header:true}],
-                ['sim-1.0.0','(first release)','—','—','—','✅ complete'],
-                ['sim-1.0.1','from: sim-1.0.0',fmt(r101.has(16)),fmt(r101.has(17)),`${fmt(!r101.has(18))} (not expected)`,rolledBack ? '⏪ rolled-back' : '❓'],
-                ['sim-1.0.2','from: sim-1.0.0 (rollback anchor)',fmt(r102.has(16)),fmt(r102.has(17)),fmt(r102.has(18)),'✅ complete'],
+                [{data:'Release',header:true},{data:'Action',header:true},{data:'Input',header:true},{data:'PR #16',header:true},{data:'PR #17',header:true},{data:'PR #18',header:true},{data:'Verdict',header:true}],
+                ['sim-1.0.0','SHA','(first release)','—','—','—','✅ baseline'],
+                ['sim-1.0.1','SHA',`from: sim-1.0.0`,fmt(r101.has(16)),fmt(r101.has(17)),`${fmt(!r101.has(18))} N/A`,rolledBack ? '⏪ rolled-back' : '❓'],
+                ['sim-1.0.2','SHA',`from: sim-1.0.0`,fmt(r102.has(16)),fmt(r102.has(17)),fmt(r102.has(18)),verdict(r102_correct)],
+                ['sim-1.0.2-v6','@v6',`previous-tag: sim-1.0.0`,fmt(r102_v6.has(16)),fmt(r102_v6.has(17)),fmt(r102_v6.has(18)),verdict(r102_v6_correct)],
               ])
-              .addHeading('Verdict', 3)
-              .addRaw(r102_correct
-                ? '✅ sim-1.0.2 includes PRs #16 and #17 — from: correctly anchored at sim-1.0.0 (rolled-back-to), not sim-1.0.1 (higher-semver bad release).'
-                : '❌ sim-1.0.2 is missing PRs #16 or #17 — from: did NOT anchor at the rollback target.')
+              .addHeading('Conclusion', 3)
+              .addRaw(r102_v6_correct
+                ? '✅ @v6 + previous-tag: works — correctly anchors at sim-1.0.0 (rollback target). previous-tag is a valid replacement for from on @v6.'
+                : '❌ @v6 + previous-tag: does NOT work — missed PRs since rollback target. previous-tag is not equivalent to from on @v6.')
               .addEOL()
-              .addLink('sim-1.0.0', r100.url)
+              .addLink('sim-1.0.2 (SHA+from)', r102.url)
               .addRaw(' · ')
-              .addLink('sim-1.0.1 (rolled back)', r101.url)
-              .addRaw(' · ')
-              .addLink('sim-1.0.2', r102.url)
+              .addLink('sim-1.0.2-v6 (v6+previous-tag)', r102_v6.url)
               .write();
 
-            if (!r101_correct) core.setFailed(`sim-1.0.1 changelog wrong: #16=${r101.has(16)} #17=${r101.has(17)}`);
-            if (!r102_correct) core.setFailed(`sim-1.0.2 missing PRs #16/#17 — previous-tag not anchoring at rollback target`);
-            if (!rolledBack)   core.setFailed(`sim-1.0.1 rollout status does not show rolled-back`);
+            if (!r101_correct)    core.setFailed(`sim-1.0.1 changelog wrong: #16=${r101.has(16)} #17=${r101.has(17)}`);
+            if (!r102_correct)    core.setFailed(`sim-1.0.2 (SHA+from) missing PRs #16/#17`);
+            if (!rolledBack)      core.setFailed(`sim-1.0.1 rollout status does not show rolled-back`);
+            if (!r102_v6_correct) core.setFailed(`sim-1.0.2-v6 (@v6+previous-tag) missing PRs #16/#17 — previous-tag does not work on @v6`);
 
       # ── Cleanup ───────────────────────────────────────────────────────────────
       - name: Cleanup sim releases and tags
@@ -364,7 +411,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const tags = [process.env.TAG_100, process.env.TAG_101, process.env.TAG_102];
+            const tags = [process.env.TAG_100, process.env.TAG_101, process.env.TAG_102, process.env.TAG_102_V6];
             const { data: releases } = await github.rest.repos.listReleases({
               owner: context.repo.owner, repo: context.repo.repo, per_page: 100,
             });
