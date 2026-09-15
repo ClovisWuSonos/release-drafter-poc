@@ -221,29 +221,11 @@ jobs:
             core.info(`Marked sim-1.0.1 as rolled-back → ${rollbackTo}`);
 
       - name: "Rollback — re-point --latest to sim-1.0.0"
-        uses: actions/github-script@v7
         env:
-          RELEASE_ID: ${{ steps.draft-100.outputs.id }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner, repo: context.repo.repo,
-              release_id: Number(process.env.RELEASE_ID), make_latest: 'true',
-            });
-            // Allow up to 15s for propagation (GitHub API can be slow for --latest updates)
-            for (let i = 0; i < 15; i++) {
-              await new Promise(r => setTimeout(r, 1000));
-              const { data: latest } = await github.rest.repos.getLatestRelease({
-                owner: context.repo.owner, repo: context.repo.repo,
-              });
-              if (latest.tag_name === process.env.TAG_100) {
-                core.info(`--latest confirmed: ${latest.tag_name} (attempt ${i+1})`);
-                return;
-              }
-              core.info(`--latest is ${latest.tag_name}, waiting... (attempt ${i+1})`);
-            }
-            core.setFailed(`--latest did not update to ${process.env.TAG_100} after 15 attempts`);
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ env.TAG_100 }}" --repo ${{ github.repository }} --latest
+          echo "Marked ${{ env.TAG_100 }} as --latest"
 
       # ════════════════════════════════════════════════════════════════════════
       # RELEASE 3 — sim-1.0.2 (post-rollback fix)
