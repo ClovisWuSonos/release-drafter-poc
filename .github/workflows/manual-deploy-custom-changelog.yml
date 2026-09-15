@@ -33,17 +33,18 @@ jobs:
           SHA=$(git rev-parse "cloud-settings-${{ inputs.version }}")
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Build rollback-aware changelog
-        id: changelog
+      - name: Build changelog and publish release
         uses: actions/github-script@v7
         env:
+          VERSION: ${{ inputs.version }}
           DEPLOY_SHA: ${{ steps.pin.outputs.sha }}
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const version = process.env.VERSION;
             const deployedSha = process.env.DEPLOY_SHA;
             const repo = { owner: context.repo.owner, repo: context.repo.repo };
 
-            // Get --latest tag as rollback-aware anchor
             let anchorTag = '';
             try {
               const { data } = await github.rest.repos.getLatestRelease(repo);
@@ -51,7 +52,6 @@ jobs:
             } catch {}
             core.info(`Anchor: ${anchorTag || 'none (first release)'}`);
 
-            // Get commits between anchor and deployed SHA (paginated)
             const commits = [];
             if (anchorTag) {
               for (let page = 1; ; page++) {
@@ -63,20 +63,15 @@ jobs:
               }
             }
 
-            // Resolve merged PRs per commit, deduplicate
             const seen = new Set();
             const prs = [];
             for (const { sha } of commits) {
-              const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                ...repo, commit_sha: sha,
-              });
+              const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({ ...repo, commit_sha: sha });
               for (const pr of data) {
                 if (pr.merged_at && !seen.has(pr.number)) { seen.add(pr.number); prs.push(pr); }
               }
             }
-            core.info(`Found ${prs.length} unique merged PRs`);
 
-            // Categorize by label
             const groups = { features: [], fixes: [], others: [] };
             for (const pr of prs) {
               const labels = pr.labels.map(l => l.name);
@@ -86,7 +81,6 @@ jobs:
               else groups.others.push(pr);
             }
 
-            // Format changelog
             const fmt = pr => `- ${pr.title} (#${pr.number}, @${pr.user.login})`;
             const sections = [
               groups.features.length && `## 🚀 Features\n\n${groups.features.map(fmt).join('\n')}`,
@@ -98,33 +92,16 @@ jobs:
               ? `## Changes\n\n${sections.join('\n\n')}`
               : '## Changes\n\nNo changes.';
 
-            core.setOutput('body', body);
-
-      - name: Publish release
-        uses: actions/github-script@v7
-        env:
-          VERSION: ${{ inputs.version }}
-          DEPLOY_SHA: ${{ steps.pin.outputs.sha }}
-          CHANGELOG_BODY: ${{ steps.changelog.outputs.body }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const tag = `cloud-settings-${process.env.VERSION}`;
-            const repo = { owner: context.repo.owner, repo: context.repo.repo };
+            const tag = `cloud-settings-${version}`;
             const footer = `\n<!-- rollout-status-start -->\n## 🚀 Rollout Status\nus-east-1: ✅ Deployed\neu-west-1: ✅ Deployed\n<!-- rollout-status-end -->`;
-            const release = {
-              name: `Cloud Settings ${process.env.VERSION}`,
-              body: process.env.CHANGELOG_BODY + footer,
-              draft: false,
-              prerelease: false,
-            };
+            const release = { name: `Cloud Settings ${version}`, body: body + footer, draft: false, prerelease: false };
 
             try {
               const { data } = await github.rest.repos.getReleaseByTag({ ...repo, tag });
               await github.rest.repos.updateRelease({ ...repo, release_id: data.id, ...release });
             } catch (e) {
               if (e.status !== 404) throw e;
-              await github.rest.repos.createRelease({ ...repo, tag_name: tag, target_commitish: process.env.DEPLOY_SHA, ...release });
+              await github.rest.repos.createRelease({ ...repo, tag_name: tag, target_commitish: deployedSha, ...release });
             }
 
       - name: Mark as latest
