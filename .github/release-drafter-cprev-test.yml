@@ -1,0 +1,19 @@
+name-template: 'Config PrevTag $RESOLVED_VERSION'
+tag-template: 'cprev-$RESOLVED_VERSION'
+change-template: '- $TITLE (#$NUMBER, @$AUTHOR)'
+
+categories:
+  - title: '🚀 Features'
+    when:
+      - labels: ['feature', 'enhancement']
+  - title: '🐛 Bug Fixes'
+    when:
+      - labels: ['fix', 'bugfix', 'bug']
+  - title: '🧰 Maintenance'
+    when:
+      - labels: ['chore', 'maintenance']
+
+template: |
+  ## Changes
+
+  $CHANGES
