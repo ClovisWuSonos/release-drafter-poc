@@ -280,9 +280,29 @@ jobs:
             core.info(`Marked ${process.env.TAG_101} as rolled-back → ${rollbackTo}`);
 
       # ════════════════════════════════════════════════════════════════════════
-      # RELEASE 3 WRONG — no previous-tag in config
-      # Anchors to highest-semver published release = cprev-1.0.1 (wrong)
+      # RELEASE 3 WRONG — explicit wrong anchor (cprev-1.0.1)
+      # Simulates post-rollback deploy with no config override: from: cprev-1.0.1
+      # → misses the rolled-back range (PRs #19-#22)
       # ════════════════════════════════════════════════════════════════════════
+
+      # Delete any floating draft from release-drafter-simplified.yml so it
+      # doesn't interfere with the anchor lookup in this step.
+      - name: "Pre Rel 3 WRONG — delete floating drafts"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner, repo: context.repo.repo, per_page: 100,
+            });
+            for (const rel of releases) {
+              if (rel.draft && !rel.tag_name.startsWith('cprev-')) {
+                await github.rest.repos.deleteRelease({
+                  owner: context.repo.owner, repo: context.repo.repo, release_id: rel.id,
+                });
+                core.info(`Deleted floating draft: ${rel.tag_name || '(untagged)'}`);
+              }
+            }
 
       - name: "Rel 3 WRONG — create tag cprev-1.0.2-wrong at HEAD"
         uses: actions/github-script@v7
@@ -296,7 +316,7 @@ jobs:
             });
             core.info(`Tagged ${process.env.TAG_102_WRONG} at ${context.sha}`);
 
-      - name: "Rel 3 WRONG — draft (no previous-tag in config, no from input → anchors to cprev-1.0.1)"
+      - name: "Rel 3 WRONG — draft (from: cprev-1.0.1 — wrong anchor after rollback)"
         id: draft-102-wrong
         uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
@@ -304,8 +324,9 @@ jobs:
           commitish: ${{ github.sha }}
           tag: ${{ env.TAG_102_WRONG }}
           version: "1.0.2"
-          name: "Config PrevTag 1.0.2 — WRONG (no config previous-tag)"
+          name: "Config PrevTag 1.0.2 — WRONG (anchored at bad release)"
           config-name: ${{ env.CONFIG_NAME }}
+          from: ${{ env.TAG_101 }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -359,6 +380,25 @@ jobs:
       # RELEASE 3 RIGHT — with previous-tag: cprev-1.0.0 in config
       # Anchors to cprev-1.0.0 (the rollback target) — correct
       # ════════════════════════════════════════════════════════════════════════
+
+      # Delete any floating draft again (the manual-op commit may have triggered
+      # release-drafter-simplified.yml between the two steps).
+      - name: "Pre Rel 3 RIGHT — delete floating drafts"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner, repo: context.repo.repo, per_page: 100,
+            });
+            for (const rel of releases) {
+              if (rel.draft && !rel.tag_name.startsWith('cprev-')) {
+                await github.rest.repos.deleteRelease({
+                  owner: context.repo.owner, repo: context.repo.repo, release_id: rel.id,
+                });
+                core.info(`Deleted floating draft: ${rel.tag_name || '(untagged)'}`);
+              }
+            }
 
       - name: "Rel 3 RIGHT — create tag cprev-1.0.2-right at HEAD"
         uses: actions/github-script@v7
@@ -434,7 +474,7 @@ jobs:
             // cprev-1.0.1 should have PRs #19-#22 (between 1.0.0 and 1.0.1)
             const r101_correct = r101.has(19) && r101.has(22) && !r101.has(23);
 
-            // cprev-1.0.2-wrong: no previous-tag in config, anchors to highest semver (cprev-1.0.1)
+            // cprev-1.0.2-wrong: from: cprev-1.0.1 (simulates wrong anchor after rollback)
             // Should have #23+ but NOT #19-#22 (missing the rolled-back range)
             const wrong_has_new   = r102_wrong.has(23);
             const wrong_misses_rb = !r102_wrong.has(19) && !r102_wrong.has(22);
@@ -468,7 +508,7 @@ jobs:
                   rolledBack ? '⏪ rolled-back' : '❓',
                 ],
                 [
-                  'cprev-1.0.2-wrong','no previous-tag in config (default anchor = highest semver)',
+                  'cprev-1.0.2-wrong','from: cprev-1.0.1 (simulates deploy after rollback, wrong anchor)',
                   fmt(r102_wrong.has(19)), fmt(r102_wrong.has(22)), fmt(r102_wrong.has(23)),
                   r102_wrong_ok
                     ? '✅ correctly shows the wrong behavior (PRs #19-#22 missing)'
