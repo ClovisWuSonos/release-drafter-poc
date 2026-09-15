@@ -31,7 +31,6 @@ jobs:
         run: |
           git fetch --tags --force
           SHA=$(git rev-parse "cloud-settings-${{ inputs.version }}")
-          echo "cloud-settings-${{ inputs.version }} -> ${SHA}"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Build rollback-aware changelog
@@ -42,95 +41,64 @@ jobs:
         with:
           script: |
             const deployedSha = process.env.DEPLOY_SHA;
+            const repo = { owner: context.repo.owner, repo: context.repo.repo };
 
-            // Step 1 — get --latest tag (rollback-aware anchor)
+            // Get --latest tag as rollback-aware anchor
             let anchorTag = '';
             try {
-              const { data } = await github.rest.repos.getLatestRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-              });
+              const { data } = await github.rest.repos.getLatestRelease(repo);
               anchorTag = data.tag_name;
-              core.info(`Anchor (--latest): ${anchorTag}`);
-            } catch (e) {
-              core.info('No releases yet — changelog will include all commits');
-            }
+            } catch {}
+            core.info(`Anchor: ${anchorTag || 'none (first release)'}`);
 
-            // Step 2 — compare commits between anchor and deployed SHA
-            let commits = [];
+            // Get commits between anchor and deployed SHA (paginated)
+            const commits = [];
             if (anchorTag) {
-              let page = 1;
-              while (true) {
+              for (let page = 1; ; page++) {
                 const { data } = await github.rest.repos.compareCommitsWithBasehead({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  basehead: `${anchorTag}...${deployedSha}`,
-                  per_page: 100,
-                  page,
+                  ...repo, basehead: `${anchorTag}...${deployedSha}`, per_page: 100, page,
                 });
                 commits.push(...data.commits);
                 if (data.commits.length < 100) break;
-                page++;
               }
             }
-            core.info(`Found ${commits.length} commits since ${anchorTag || 'beginning'}`);
 
-            // Step 3 — find merged PRs associated with each commit, deduplicate
+            // Resolve merged PRs per commit, deduplicate
             const seen = new Set();
             const prs = [];
-            for (const commit of commits) {
-              const { data: associated } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                commit_sha: commit.sha,
+            for (const { sha } of commits) {
+              const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                ...repo, commit_sha: sha,
               });
-              for (const pr of associated) {
-                if (pr.state === 'closed' && pr.merged_at && !seen.has(pr.number)) {
-                  seen.add(pr.number);
-                  prs.push(pr);
-                }
+              for (const pr of data) {
+                if (pr.merged_at && !seen.has(pr.number)) { seen.add(pr.number); prs.push(pr); }
               }
             }
             core.info(`Found ${prs.length} unique merged PRs`);
 
-            // Step 4 — categorize by label, exclude skip-changelog
-            const features = [];
-            const fixes = [];
-            const others = [];
-
+            // Categorize by label
+            const groups = { features: [], fixes: [], others: [] };
             for (const pr of prs) {
               const labels = pr.labels.map(l => l.name);
               if (labels.includes('skip-changelog')) continue;
-              if (labels.includes('feature') || labels.includes('enhancement')) {
-                features.push(pr);
-              } else if (labels.includes('fix') || labels.includes('bug') || labels.includes('bugfix')) {
-                fixes.push(pr);
-              } else {
-                others.push(pr);
-              }
+              if (labels.some(l => ['feature', 'enhancement'].includes(l))) groups.features.push(pr);
+              else if (labels.some(l => ['fix', 'bug', 'bugfix'].includes(l))) groups.fixes.push(pr);
+              else groups.others.push(pr);
             }
 
-            // Step 5 — format changelog
+            // Format changelog
             const fmt = pr => `- ${pr.title} (#${pr.number}, @${pr.user.login})`;
-            const sections = [];
-
-            if (features.length) {
-              sections.push(`## 🚀 Features\n\n${features.map(fmt).join('\n')}`);
-            }
-            if (fixes.length) {
-              sections.push(`## 🐛 Bug Fixes\n\n${fixes.map(fmt).join('\n')}`);
-            }
-            if (others.length) {
-              sections.push(`## 🧰 Changes\n\n${others.map(fmt).join('\n')}`);
-            }
+            const sections = [
+              groups.features.length && `## 🚀 Features\n\n${groups.features.map(fmt).join('\n')}`,
+              groups.fixes.length    && `## 🐛 Bug Fixes\n\n${groups.fixes.map(fmt).join('\n')}`,
+              groups.others.length   && `## 🧰 Changes\n\n${groups.others.map(fmt).join('\n')}`,
+            ].filter(Boolean);
 
             const body = sections.length
               ? `## Changes\n\n${sections.join('\n\n')}`
               : '## Changes\n\nNo changes.';
 
-            core.info(`Changelog:\n${body}`);
             core.setOutput('body', body);
-            core.setOutput('anchor', anchorTag);
 
       - name: Publish release
         uses: actions/github-script@v7
@@ -141,47 +109,22 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const version = process.env.VERSION;
-            const tag = `cloud-settings-${version}`;
+            const tag = `cloud-settings-${process.env.VERSION}`;
+            const repo = { owner: context.repo.owner, repo: context.repo.repo };
             const footer = `\n<!-- rollout-status-start -->\n## 🚀 Rollout Status\nus-east-1: ✅ Deployed\neu-west-1: ✅ Deployed\n<!-- rollout-status-end -->`;
-            const body = process.env.CHANGELOG_BODY + footer;
+            const release = {
+              name: `Cloud Settings ${process.env.VERSION}`,
+              body: process.env.CHANGELOG_BODY + footer,
+              draft: false,
+              prerelease: false,
+            };
 
-            // Create or update release for the tag
-            let releaseId;
             try {
-              const { data } = await github.rest.repos.getReleaseByTag({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag,
-              });
-              releaseId = data.id;
-              await github.rest.repos.updateRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                release_id: releaseId,
-                name: `Cloud Settings ${version}`,
-                body,
-                draft: false,
-                prerelease: false,
-              });
-              core.info(`Updated existing release for ${tag}`);
+              const { data } = await github.rest.repos.getReleaseByTag({ ...repo, tag });
+              await github.rest.repos.updateRelease({ ...repo, release_id: data.id, ...release });
             } catch (e) {
-              if (e.status === 404) {
-                const { data } = await github.rest.repos.createRelease({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  tag_name: tag,
-                  target_commitish: process.env.DEPLOY_SHA,
-                  name: `Cloud Settings ${version}`,
-                  body,
-                  draft: false,
-                  prerelease: false,
-                });
-                releaseId = data.id;
-                core.info(`Created release for ${tag}`);
-              } else {
-                throw e;
-              }
+              if (e.status !== 404) throw e;
+              await github.rest.repos.createRelease({ ...repo, tag_name: tag, target_commitish: process.env.DEPLOY_SHA, ...release });
             }
 
       - name: Mark as latest
@@ -189,4 +132,3 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release edit "cloud-settings-${{ inputs.version }}" --latest
-          echo "cloud-settings-${{ inputs.version }} marked as latest."
