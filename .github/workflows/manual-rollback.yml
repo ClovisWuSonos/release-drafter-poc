@@ -33,11 +33,9 @@ jobs:
               repo: context.repo.repo,
             });
 
-            // Replace the status value on each region line, preserving whatever regions exist
             const body = release.body.replace(
-              /(## 🚀 Rollout Status\n)([\s\S]*)/,
-              (_, header, regions) =>
-                header + regions.replace(/: .+/g, `: ⏪ Rolled Back → ${rollbackTo}`)
+              /<!-- rollout-status-start -->([\s\S]*?)<!-- rollout-status-end -->/,
+              (section) => section.replace(/: .+/g, `: ⏪ Rolled Back → ${rollbackTo}`)
             );
 
             await github.rest.repos.updateRelease({

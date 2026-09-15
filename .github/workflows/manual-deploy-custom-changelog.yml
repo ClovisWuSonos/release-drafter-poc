@@ -143,7 +143,7 @@ jobs:
           script: |
             const version = process.env.VERSION;
             const tag = `cloud-settings-${version}`;
-            const footer = `\n## 🚀 Rollout Status\nus-east-1: ✅ Deployed\neu-west-1: ✅ Deployed`;
+            const footer = `\n<!-- rollout-status-start -->\n## 🚀 Rollout Status\nus-east-1: ✅ Deployed\neu-west-1: ✅ Deployed\n<!-- rollout-status-end -->`;
             const body = process.env.CHANGELOG_BODY + footer;
 
             // Create or update release for the tag
