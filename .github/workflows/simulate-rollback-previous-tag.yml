@@ -146,7 +146,7 @@ jobs:
             });
             core.info(`Tagged ${process.env.TAG_101} at ${process.env.COMMIT_101}`);
 
-      - name: "Rel 2 — draft changelog (previous-tag: sim-1.0.0 → expects PRs #16 #17)"
+      - name: "Rel 2 — draft changelog (from: sim-1.0.0 → expects PRs #16 #17)"
         id: draft-101
         uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
@@ -155,7 +155,7 @@ jobs:
           tag: ${{ env.TAG_101 }}
           version: "1.0.1"
           name: "Sim 1.0.1"
-          previous-tag: ${{ env.TAG_100 }}
+          from: ${{ env.TAG_100 }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -231,17 +231,19 @@ jobs:
               owner: context.repo.owner, repo: context.repo.repo,
               release_id: Number(process.env.RELEASE_ID), make_latest: 'true',
             });
-            for (let i = 0; i < 5; i++) {
+            // Allow up to 15s for propagation (GitHub API can be slow for --latest updates)
+            for (let i = 0; i < 15; i++) {
+              await new Promise(r => setTimeout(r, 1000));
               const { data: latest } = await github.rest.repos.getLatestRelease({
                 owner: context.repo.owner, repo: context.repo.repo,
               });
               if (latest.tag_name === process.env.TAG_100) {
-                core.info(`--latest confirmed: ${latest.tag_name}`);
+                core.info(`--latest confirmed: ${latest.tag_name} (attempt ${i+1})`);
                 return;
               }
-              await new Promise(r => setTimeout(r, 1000));
+              core.info(`--latest is ${latest.tag_name}, waiting... (attempt ${i+1})`);
             }
-            core.setFailed(`--latest did not update to ${process.env.TAG_100}`);
+            core.setFailed(`--latest did not update to ${process.env.TAG_100} after 15 attempts`);
 
       # ════════════════════════════════════════════════════════════════════════
       # RELEASE 3 — sim-1.0.2 (post-rollback fix)
@@ -259,9 +261,9 @@ jobs:
             });
             core.info(`Tagged ${process.env.TAG_102} at ${context.sha}`);
 
-      # Key test: previous-tag anchors at sim-1.0.0 (the rollback target), not sim-1.0.1
+      # Key test: from anchors at sim-1.0.0 (the rollback target), not sim-1.0.1
       # (the higher-semver bad release). Correct changelog = PRs #16, #17, #18, #19, #20+.
-      - name: "Rel 3 — draft changelog (previous-tag: sim-1.0.0 — rollback anchor)"
+      - name: "Rel 3 — draft changelog (from: sim-1.0.0 — rollback anchor)"
         id: draft-102
         uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
         with:
@@ -270,7 +272,7 @@ jobs:
           tag: ${{ env.TAG_102 }}
           version: "1.0.2"
           name: "Sim 1.0.2"
-          previous-tag: ${{ env.TAG_100 }}
+          from: ${{ env.TAG_100 }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -351,13 +353,13 @@ jobs:
               .addTable([
                 [{data:'Release',header:true},{data:'Anchor',header:true},{data:'PR #16',header:true},{data:'PR #17',header:true},{data:'PR #18',header:true},{data:'Rollout Status',header:true}],
                 ['sim-1.0.0','(first release)','—','—','—','✅ complete'],
-                ['sim-1.0.1','previous-tag: sim-1.0.0',fmt(r101.has(16)),fmt(r101.has(17)),`${fmt(!r101.has(18))} (not expected)`,rolledBack ? '⏪ rolled-back' : '❓'],
-                ['sim-1.0.2','previous-tag: sim-1.0.0 (rollback anchor)',fmt(r102.has(16)),fmt(r102.has(17)),fmt(r102.has(18)),'✅ complete'],
+                ['sim-1.0.1','from: sim-1.0.0',fmt(r101.has(16)),fmt(r101.has(17)),`${fmt(!r101.has(18))} (not expected)`,rolledBack ? '⏪ rolled-back' : '❓'],
+                ['sim-1.0.2','from: sim-1.0.0 (rollback anchor)',fmt(r102.has(16)),fmt(r102.has(17)),fmt(r102.has(18)),'✅ complete'],
               ])
               .addHeading('Verdict', 3)
               .addRaw(r102_correct
-                ? '✅ sim-1.0.2 includes PRs #16 and #17 — previous-tag correctly anchored at sim-1.0.0 (rolled-back-to), not sim-1.0.1 (higher-semver bad release). previous-tag is a valid replacement for from.'
-                : '❌ sim-1.0.2 is missing PRs #16 or #17 — previous-tag did NOT override the highest-semver anchor and is NOT equivalent to from.')
+                ? '✅ sim-1.0.2 includes PRs #16 and #17 — from: correctly anchored at sim-1.0.0 (rolled-back-to), not sim-1.0.1 (higher-semver bad release).'
+                : '❌ sim-1.0.2 is missing PRs #16 or #17 — from: did NOT anchor at the rollback target.')
               .addEOL()
               .addLink('sim-1.0.0', r100.url)
               .addRaw(' · ')
