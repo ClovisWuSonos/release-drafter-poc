@@ -1,4 +1,5 @@
 name-template: 'Config PrevTag $RESOLVED_VERSION'
+previous-tag: 'cprev-1.0.0'
 tag-template: 'cprev-$RESOLVED_VERSION'
 change-template: '- $TITLE (#$NUMBER, @$AUTHOR)'
 
