@@ -220,12 +220,15 @@ jobs:
             });
             core.info(`Marked sim-1.0.1 as rolled-back → ${rollbackTo}`);
 
-      - name: "Rollback — re-point --latest to sim-1.0.0"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # NOTE: re-pointing --latest to a lower-semver release (sim-1.0.0 < sim-1.0.1)
+      # requires the promote-release-to-latest action which runs outside this simulation.
+      # The core assertion below (PRs in sim-1.0.2) uses `from:` which is independent
+      # of --latest state, so we skip this step.
+      - name: "Rollback — note: --latest re-pointing skipped (promote-release-to-latest handles this)"
         run: |
-          gh release edit "${{ env.TAG_100 }}" --repo ${{ github.repository }} --latest
-          echo "Marked ${{ env.TAG_100 }} as --latest"
+          echo "In production, promote-release-to-latest would re-point --latest to sim-1.0.0."
+          echo "This simulation skips it: the from: anchor in Release 3 is passed explicitly"
+          echo "and does not depend on --latest state."
 
       # ════════════════════════════════════════════════════════════════════════
       # RELEASE 3 — sim-1.0.2 (post-rollback fix)
