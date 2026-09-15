@@ -33,8 +33,12 @@ jobs:
               repo: context.repo.repo,
             });
 
-            const status = `## 🚀 Rollout Status\nus-east-1: ⏪ Rolled Back → ${rollbackTo}\neu-west-1: ⏪ Rolled Back → ${rollbackTo}`;
-            const body = release.body.replace(/## 🚀 Rollout Status[\s\S]*/, status);
+            // Replace the status value on each region line, preserving whatever regions exist
+            const body = release.body.replace(
+              /(## 🚀 Rollout Status\n)([\s\S]*)/,
+              (_, header, regions) =>
+                header + regions.replace(/: .+/g, `: ⏪ Rolled Back → ${rollbackTo}`)
+            );
 
             await github.rest.repos.updateRelease({
               owner: context.repo.owner,
