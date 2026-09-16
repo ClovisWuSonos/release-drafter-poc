@@ -24,11 +24,23 @@ jobs:
           result-encoding: string
           script: |
             const regions = JSON.parse(process.env.REGIONS);
-            const rows = regions.map(r => `${r}: ✅ complete`).join('\n');
-            return `<!-- rollout-status:start -->\n## Rollout Status\n\n${rows}\n<!-- rollout-status:end -->`;
+            const rows = regions.map(r => `${r}: ✅ complete`).join('
+');
+            return `<!-- rollout-status:start -->
+## Rollout Status
 
-      - name: Log footer
-        run: echo "${{ steps.build-footer.outputs.result }}"
+${rows}
+<!-- rollout-status:end -->`;
+
+      - name: Publish release (JSON footer)
+        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        with:
+          publish: true
+          tag: test-json-${{ github.run_number }}
+          name: "Test JSON regions ${{ github.run_number }}"
+          footer: ${{ steps.build-footer.outputs.result }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   option-2-comma:
     name: "Option 2: Comma-separated"
@@ -42,8 +54,20 @@ jobs:
           result-encoding: string
           script: |
             const regions = process.env.REGIONS.split(',').map(r => r.trim());
-            const rows = regions.map(r => `${r}: ✅ complete`).join('\n');
-            return `<!-- rollout-status:start -->\n## Rollout Status\n\n${rows}\n<!-- rollout-status:end -->`;
+            const rows = regions.map(r => `${r}: ✅ complete`).join('
+');
+            return `<!-- rollout-status:start -->
+## Rollout Status
 
-      - name: Log footer
-        run: echo "${{ steps.build-footer.outputs.result }}"
+${rows}
+<!-- rollout-status:end -->`;
+
+      - name: Publish release (comma footer)
+        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        with:
+          publish: true
+          tag: test-comma-${{ github.run_number }}
+          name: "Test comma regions ${{ github.run_number }}"
+          footer: ${{ steps.build-footer.outputs.result }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
