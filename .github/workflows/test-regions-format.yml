@@ -1,0 +1,49 @@
+name: Test Regions Format for Footer
+
+on:
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: "Regions input — try JSON [\"us-east-1\",\"eu-west-1\"] or comma-separated us-east-1,eu-west-1"
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  option-1-json:
+    name: "Option 1: JSON array"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        id: build-footer
+        env:
+          REGIONS: ${{ inputs.regions }}
+        with:
+          result-encoding: string
+          script: |
+            const regions = JSON.parse(process.env.REGIONS);
+            const rows = regions.map(r => `${r}: ✅ complete`).join('\n');
+            return `<!-- rollout-status:start -->\n## Rollout Status\n\n${rows}\n<!-- rollout-status:end -->`;
+
+      - name: Log footer
+        run: echo "${{ steps.build-footer.outputs.result }}"
+
+  option-2-comma:
+    name: "Option 2: Comma-separated"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        id: build-footer
+        env:
+          REGIONS: ${{ inputs.regions }}
+        with:
+          result-encoding: string
+          script: |
+            const regions = process.env.REGIONS.split(',').map(r => r.trim());
+            const rows = regions.map(r => `${r}: ✅ complete`).join('\n');
+            return `<!-- rollout-status:start -->\n## Rollout Status\n\n${rows}\n<!-- rollout-status:end -->`;
+
+      - name: Log footer
+        run: echo "${{ steps.build-footer.outputs.result }}"
