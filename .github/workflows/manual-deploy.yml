@@ -55,7 +55,7 @@ jobs:
             exit 1
           fi
 
-      # Step A: find the currently-open draft release and snapshot its body.
+      # Step A: verify a draft release exists for this version.
       - name: "Step A - Locate active draft release"
         id: draft
         env:
@@ -69,105 +69,61 @@ jobs:
             exit 1
           fi
 
-          DRAFT_ID=$(echo "$DRAFT_JSON" | jq -r '.id')
           DRAFT_TAG=$(echo "$DRAFT_JSON" | jq -r '.tag_name')
-          DRAFT_BODY=$(echo "$DRAFT_JSON" | jq -r '.body')
+          echo "Found draft for tag=$DRAFT_TAG"
+          echo "draft_tag=$DRAFT_TAG" >> "$GITHUB_OUTPUT"
 
-          echo "Found draft id=$DRAFT_ID currently tracking tag=$DRAFT_TAG"
-
-          echo "draft_id=$DRAFT_ID" >> "$GITHUB_OUTPUT"
-          {
-            echo "draft_body<<DRAFT_BODY_EOF"
-            echo "$DRAFT_BODY"
-            echo "DRAFT_BODY_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      # Step B: simulate a region-by-region deploy, PATCHing the draft after
-      # EVERY region so the rollout table is genuinely live, not one static
-      # write at the end. If simulate_failure is set, the chosen region
-      # reports failure and the loop stops there — later regions are never
-      # attempted, same as a real rollout would halt.
-      - name: "Step B - Simulate per-region deploy, live-patch rollout status"
+      # Step B: simulate a region-by-region deploy. Collects each region's
+      # outcome into a JSON array for the action in the next step.
+      # Stops early on failure — later regions are never attempted.
+      - name: "Step B - Simulate per-region deploy, collect outcomes"
         id: rollout
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DRAFT_ID: ${{ steps.draft.outputs.draft_id }}
-          DRAFT_BODY: ${{ steps.draft.outputs.draft_body }}
-          SIMULATE_FAILURE: ${{ inputs.simulate_failure }}
-          FAIL_AT_REGION: ${{ inputs.fail_at_region }}
         run: |
           REGIONS=(us-east-1 us-west-2 eu-west-1)
-          ROWS=""
+          REGIONS_JSON='[]'
           DEPLOY_FAILED=false
-          ROLLOUT_TABLE=""
 
           for REGION in "${REGIONS[@]}"; do
             sleep 3 # simulate per-region deploy time
 
-            TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-            if [ "$SIMULATE_FAILURE" == "true" ] && [ "$REGION" == "$FAIL_AT_REGION" ]; then
-              STATUS_LABEL="❌ Failed"
+            if [ "${{ inputs.simulate_failure }}" == "true" ] && [ "$REGION" == "${{ inputs.fail_at_region }}" ]; then
+              STATUS="failed"
               DEPLOY_FAILED=true
             else
-              STATUS_LABEL="✅ Success"
+              STATUS="success"
             fi
 
-            # Command substitution strips trailing newlines, so printf's \n
-            # would otherwise be silently eaten and every row would run
-            # together on one line. Append the newline explicitly, outside
-            # the substitution.
-            ROWS="${ROWS}$(printf '| %s | %s | %s |' "$REGION" "$STATUS_LABEL" "$TS")"$'\n'
+            REGIONS_JSON=$(echo "$REGIONS_JSON" | jq \
+              --arg r "$REGION" --arg s "$STATUS" \
+              '. + [{"region": $r, "status": $s}]')
 
-            ROLLOUT_TABLE=$(printf '\n## 🚀 Rollout Status\n\n| Region | Status | Timestamp (UTC) |\n|---|---|---|\n%s\n_Deploying version: %s_\n' \
-              "$ROWS" "${{ inputs.version }}")
-
-            jq -n --arg body "${DRAFT_BODY}${ROLLOUT_TABLE}" '{body: $body}' | gh api \
-              --method PATCH \
-              "repos/${{ github.repository }}/releases/${DRAFT_ID}" \
-              --input -
-
-            echo "Patched draft after ${REGION} (failed so far: ${DEPLOY_FAILED})"
+            echo "Region $REGION: $STATUS"
 
             if [ "$DEPLOY_FAILED" == "true" ]; then
-              echo "Stopping rollout — ${REGION} failed."
+              echo "Stopping rollout — $REGION failed."
               break
             fi
           done
 
-          # Save whatever the table looked like when the loop stopped, so
-          # Step D can re-attach it as a footer (success case), because
-          # release-drafter fully regenerates the body on every run.
-          {
-            echo "rollout_table<<ROLLOUT_EOF"
-            echo "$ROLLOUT_TABLE"
-            echo "ROLLOUT_EOF"
-          } >> "$GITHUB_OUTPUT"
+          echo "regions_json=$REGIONS_JSON" >> "$GITHUB_OUTPUT"
           echo "deploy_failed=$DEPLOY_FAILED" >> "$GITHUB_OUTPUT"
 
-      # Step B-fail: on failure, overwrite the partial table with an
-      # explicit marker, then fail the job. Nothing downstream (publish,
-      # mark-latest, redraft) runs. This marker is intentionally short-lived:
-      # the next real push to main runs release-drafter and fully
-      # regenerates the body, wiping it (see README). The draft itself is
-      # otherwise untouched and keeps accumulating commits normally —
-      # including this failed attempt's — so nothing is lost.
-      - name: "Step B-fail - Leave a failure marker, then fail the job"
+      # Step B-action: write the per-region outcomes to the draft release body
+      # so the status is visible before publish. On the failure path this is the
+      # final write — Step B-fail exits the job immediately after.
+      - name: "Step B-action - Write rollout status to draft"
+        uses: ./.github/actions/update-region-rollout-status
+        with:
+          tag: ${{ steps.draft.outputs.draft_tag }}
+          regions: ${{ steps.rollout.outputs.regions_json }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step B-fail: fail the job cleanly. The draft body (updated above)
+      # already shows which region failed. The draft itself is untouched and
+      # keeps accumulating commits — the next push to main regenerates it.
+      - name: "Step B-fail - Fail the job after a failed region"
         if: steps.rollout.outputs.deploy_failed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DRAFT_ID: ${{ steps.draft.outputs.draft_id }}
-          DRAFT_BODY: ${{ steps.draft.outputs.draft_body }}
         run: |
-          TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          FAILURE_NOTE=$(printf '\n## 🚀 Rollout Status\n⚠️ Deploy attempt for %s failed at **%s** (%s) — not published, "latest" unchanged. This note is cleared automatically by the next merge to main.\n' \
-            "${{ inputs.version }}" "${{ inputs.fail_at_region }}" "$TS")
-
-          jq -n --arg body "${DRAFT_BODY}${FAILURE_NOTE}" '{body: $body}' | gh api \
-            --method PATCH \
-            "repos/${{ github.repository }}/releases/${DRAFT_ID}" \
-            --input -
-
           echo "::error::Deploy of ${{ inputs.version }} failed at ${{ inputs.fail_at_region }}. Release NOT published; 'latest' unchanged."
           exit 1
 
@@ -223,7 +179,11 @@ jobs:
       # not whatever main/the draft looks like right now. `commitish` pins the
       # changelog to the exact deployed SHA. `from` anchors the changelog to
       # --latest, ensuring that after a rollback all re-shipped changes are
-      # included — not just the fix. `footer` re-attaches the rollout table.
+      # included — not just the fix.
+      #
+      # Note: release-drafter regenerates the full body on publish, so the
+      # rollout status added in Step B-action is cleared. Step D-action
+      # re-adds it to the now-published release.
       #
       # Two conditional steps because passing from: "" would cause release-drafter
       # to use an empty string as a git ref. On first release (no --latest yet),
@@ -237,7 +197,6 @@ jobs:
           tag: cloud-settings-${{ inputs.version }}
           commitish: ${{ steps.pin.outputs.sha }}
           from: ${{ steps.anchor.outputs.tag }}
-          footer: ${{ steps.rollout.outputs.rollout_table }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -249,9 +208,18 @@ jobs:
           version: ${{ inputs.version }}
           tag: cloud-settings-${{ inputs.version }}
           commitish: ${{ steps.pin.outputs.sha }}
-          footer: ${{ steps.rollout.outputs.rollout_table }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step D-action: add rollout status to the published release.
+      # release-drafter regenerated the body on publish, so we re-apply the
+      # status block here using the same regions_json from Step B.
+      - name: "Step D-action - Add rollout status to published release"
+        uses: ./.github/actions/update-region-rollout-status
+        with:
+          tag: cloud-settings-${{ inputs.version }}
+          regions: ${{ steps.rollout.outputs.regions_json }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       # Step D2: mark this release as "latest" — GitHub's native
       # make_latest flag (gh release edit --latest), not a moved git tag.

@@ -1,7 +1,7 @@
 name: Manual Rollback
 
 # Rolls back to a previously deployed version by:
-# 1. Updating the current --latest release's rollout status to "Rolled Back"
+# 1. Updating the current --latest release's rollout status to "rolled-back"
 # 2. Re-pointing --latest to the target rollback version
 
 on:
@@ -19,33 +19,37 @@ jobs:
   rollback:
     runs-on: ubuntu-latest
     steps:
-      - name: Update current latest release to Rolled Back status
+      # Find the current --latest release so we know which tag to mark as rolled-back.
+      - name: Get current latest release tag
+        id: latest
         uses: actions/github-script@v7
-        env:
-          ROLLBACK_TO: ${{ inputs.rollback-to-version }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const rollbackTo = `cloud-settings-${process.env.ROLLBACK_TO}`;
-
-            const { data: release } = await github.rest.repos.getLatestRelease({
+            const { data } = await github.rest.repos.getLatestRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
             });
+            core.info(`Current latest: ${data.tag_name}`);
+            core.setOutput('tag', data.tag_name);
 
-            const body = release.body.replace(
-              /<!-- rollout-status-start -->([\s\S]*?)<!-- rollout-status-end -->/,
-              (section) => section.replace(/: .+/g, `: ⏪ Rolled Back → ${rollbackTo}`)
-            );
+      # Mark all regions of the current latest release as rolled-back,
+      # noting which version production reverted to.
+      - name: Update rollout status to rolled-back
+        uses: ./.github/actions/update-region-rollout-status
+        with:
+          tag: ${{ steps.latest.outputs.tag }}
+          regions: |
+            [
+              {"region": "us-east-1", "status": "rolled-back"},
+              {"region": "us-west-2", "status": "rolled-back"},
+              {"region": "eu-west-1", "status": "rolled-back"}
+            ]
+          rolled-back-to: cloud-settings-${{ inputs.rollback-to-version }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: release.id,
-              body,
-            });
-            core.info(`${release.tag_name} marked as Rolled Back → ${rollbackTo}`);
-
+      # Re-point --latest to the rollback target so the correct version is
+      # shown as the current production release.
       - name: Re-point --latest to rollback target
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

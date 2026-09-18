@@ -1,0 +1,49 @@
+name: Update Region Rollout Status
+description: >
+  Adds or updates per-region rollout status rows inside a GitHub release body.
+  Supports single-region updates (forward deploy and rollback) and multi-region
+  bulk updates (forward deploy). The status block is idempotent: re-running for
+  the same region overwrites the previous row rather than appending a duplicate.
+
+inputs:
+  tag:
+    description: "Git tag of the release to update (e.g. cloud-settings-2.14.200)."
+    required: true
+  regions:
+    description: >
+      JSON array of {region, status} objects.
+      Forward deploy example (single or bulk):
+        [{"region":"us-east-1","status":"success"},{"region":"us-west-2","status":"in-progress"}]
+      Rollback example:
+        [{"region":"us-east-1","status":"rolled-back"}]
+      Valid status values: success, failed, in-progress, rolled-back.
+    required: true
+  rolled-back-to:
+    description: >
+      Tag that production was reverted to (e.g. cloud-settings-2.14.199).
+      Required when any region carries status "rolled-back"; ignored otherwise.
+    required: false
+    default: ""
+  github-token:
+    description: "GitHub token with contents: write permission on the repo."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v7
+      env:
+        TAG: ${{ inputs.tag }}
+        REGIONS: ${{ inputs.regions }}
+        ROLLED_BACK_TO: ${{ inputs.rolled-back-to }}
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { updateRolloutStatus } = require(`${process.env.ACTION_PATH}/update-rollout-status.cjs`);
+          await updateRolloutStatus({
+            github, core, context,
+            tag: process.env.TAG,
+            regions: process.env.REGIONS,
+            rolledBackTo: process.env.ROLLED_BACK_TO,
+          });
