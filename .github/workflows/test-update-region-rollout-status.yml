@@ -1,0 +1,153 @@
+name: Test update-region-rollout-status action
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Which scenario to test'
+        type: choice
+        required: true
+        default: forward-deploy-single
+        options:
+          - forward-deploy-single    # single region, success
+          - forward-deploy-bulk      # three regions at once
+          - forward-deploy-failure   # one failed region
+          - rollback                 # mark published release as rolled-back
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Create a scratch draft release so the action has something to write to.
+      # The rollback scenario targets this same release after publishing it.
+      - name: Create scratch release
+        id: scratch
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = `test-rollout-action-${{ github.run_number }}`;
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Test rollout action run ${{ github.run_number }}`,
+              body: '## Changes\n\n- test commit (#1, @test-user)',
+              draft: true,
+              generate_release_notes: false,
+            });
+            core.info(`Created draft release id=${data.id} tag=${tag}`);
+            core.setOutput('tag', tag);
+            core.setOutput('id', String(data.id));
+
+      # ── Scenario: single-region forward deploy ──────────────────────────
+      - name: "[forward-deploy-single] Apply single region status"
+        if: inputs.scenario == 'forward-deploy-single'
+        uses: ./.github/actions/update-region-rollout-status
+        with:
+          tag: ${{ steps.scratch.outputs.tag }}
+          regions: '[{"region":"us-east-1","status":"success"}]'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Scenario: multi-region bulk forward deploy ──────────────────────
+      - name: "[forward-deploy-bulk] Apply three regions at once"
+        if: inputs.scenario == 'forward-deploy-bulk'
+        uses: ./.github/actions/update-region-rollout-status
+        with:
+          tag: ${{ steps.scratch.outputs.tag }}
+          regions: |
+            [
+              {"region": "us-east-1", "status": "success"},
+              {"region": "us-west-2", "status": "success"},
+              {"region": "eu-west-1", "status": "in-progress"}
+            ]
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Scenario: forward deploy with a failed region ───────────────────
+      - name: "[forward-deploy-failure] Apply mixed success/failed regions"
+        if: inputs.scenario == 'forward-deploy-failure'
+        uses: ./.github/actions/update-region-rollout-status
+        with:
+          tag: ${{ steps.scratch.outputs.tag }}
+          regions: |
+            [
+              {"region": "us-east-1", "status": "success"},
+              {"region": "us-west-2", "status": "failed"}
+            ]
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Scenario: rollback — publish the scratch release first, then mark rolled-back
+      - name: "[rollback] Publish scratch release"
+        if: inputs.scenario == 'rollback'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number('${{ steps.scratch.outputs.id }}'),
+              draft: false,
+            });
+            core.info(`Published ${{ steps.scratch.outputs.tag }}`);
+
+      - name: "[rollback] Mark all regions rolled-back"
+        if: inputs.scenario == 'rollback'
+        uses: ./.github/actions/update-region-rollout-status
+        with:
+          tag: ${{ steps.scratch.outputs.tag }}
+          regions: |
+            [
+              {"region": "us-east-1", "status": "rolled-back"},
+              {"region": "us-west-2", "status": "rolled-back"},
+              {"region": "eu-west-1", "status": "rolled-back"}
+            ]
+          rolled-back-to: cloud-settings-1.1.2
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Verify: read the release body and print it ──────────────────────
+      - name: Verify — print the updated release body
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data } = await github.rest.repos.getRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number('${{ steps.scratch.outputs.id }}'),
+            });
+            core.info('=== Release body after action ===');
+            core.info(data.body);
+
+            const hasStart = data.body.includes('<!-- rollout-status:start -->');
+            const hasEnd   = data.body.includes('<!-- rollout-status:end -->');
+            if (!hasStart || !hasEnd) {
+              core.setFailed('rollout-status block is missing from the release body');
+            } else {
+              core.info('✅ rollout-status block found — action is working');
+            }
+
+      # ── Cleanup: delete the scratch release and its tag ─────────────────
+      - name: Cleanup — delete scratch release and tag
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const releaseId = Number('${{ steps.scratch.outputs.id }}');
+            const tag = '${{ steps.scratch.outputs.tag }}';
+            try {
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner, repo: context.repo.repo, release_id: releaseId,
+              });
+              core.info(`Deleted release ${releaseId}`);
+            } catch (e) { core.warning(`Could not delete release: ${e.message}`); }
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner, repo: context.repo.repo, ref: `tags/${tag}`,
+              });
+              core.info(`Deleted tag ${tag}`);
+            } catch (e) { core.warning(`Could not delete tag: ${e.message}`); }
