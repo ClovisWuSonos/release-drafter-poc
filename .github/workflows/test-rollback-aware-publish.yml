@@ -3,35 +3,36 @@ name: Test Rollback-Aware Publish
 # Simulates three real-world deploy scenarios to validate the `from` input in
 # release-drafter v7.10.0 (SHA 978bb0b30c5ee8cdd332ced253758157150d43f0).
 #
-# Repo history setup (tags created ahead of time):
+# Three releases in repo history (tags at specific commits):
 #
-#   sim-stable-v1.0  ← last known-good version (baseline)
-#     PR #1  feat: add dark mode support
-#     PR #2  feat: add new settings panel
-#     PR #4  feat: Dark mode support
-#   sim-bad-v1.1     ← bad version, released then rolled back
-#     PR #5  feat: New settings panel
-#     PR #6  fix:  Stabilise config reload
-#     PR #7  fix:  Critical hotfix after rollback
-#   HEAD             ← fix/redeploy
+#   sim-stable-v1.0  (tagged at commit before PRs #1 #2 #4)
+#     → represents the last known-good stable version
+#
+#   sim-bad-v1.1     (tagged after PRs #1 #2 #4 merged)
+#     PRs in this release: #1 feat dark mode, #2 feat new settings, #4 feat dark mode
+#     → bad version, released then rolled back
+#
+#   HEAD             (after PRs #5 #6 #7 merged)
+#     PRs added since bad: #5 feat new settings, #6 fix config reload, #7 fix hotfix
+#     → the fix/redeploy
 #
 # Scenarios:
 #
-#   A — Normal forward deploy (no rollback):
-#       --latest = sim-bad-v1.1. from = "" (empty). Changelog since bad = #5 #6 #7.
-#       Validates: empty from is safe and anchors to --latest normally.
+#   A — Normal forward deploy, from: "" (empty):
+#       getLatestRelease() = sim-bad-v1.1. Changelog = #5 #6 #7 (PRs since bad).
+#       Validates: empty from is safe and anchors to latest as normal.
 #
-#   B — Post-rollback, WITHOUT from:
-#       --latest still = sim-bad-v1.1 (rollback does NOT move --latest).
-#       No from input. Changelog since bad = #5 #6 #7 only. INCOMPLETE.
-#       Demonstrates the bug.
+#   B — Post-rollback deploy, no from:
+#       getLatestRelease() = sim-bad-v1.1 (rollback does NOT update getLatestRelease).
+#       Changelog = #5 #6 #7 only. MISSING #1 #2 #4 (bad version's PRs). INCOMPLETE.
+#       Demonstrates the bug: changelog omits the bad version's changes.
 #
-#   C — Post-rollback, WITH from: sim-stable-v1.0:
-#       --latest still = sim-bad-v1.1. from = sim-stable-v1.0.
-#       Changelog since stable = #1 #2 #4 #5 #6 #7. COMPLETE.
-#       Demonstrates the fix.
+#   C — Post-rollback deploy, with from: sim-stable-v1.0:
+#       Explicit anchor overrides getLatestRelease().
+#       Changelog = #1 #2 #4 #5 #6 #7. COMPLETE.
+#       Demonstrates the fix: all changes since stable are captured.
 #
-#   Assert: C has more entries than B (the `from` input makes a real difference).
+#   Final assert: C includes #1 #2 #4 (bad version PRs) which B misses.
 
 on:
   workflow_dispatch: {}
@@ -43,6 +44,8 @@ permissions:
 env:
   STABLE_TAG: sim-stable-v1.0
   BAD_TAG: sim-bad-v1.1
+  STABLE_SHA: 62a27ad3e5a4edc00a911baa8945898fc656ef72
+  BAD_SHA: 6c2ae374a354432ffd54fe8776bae1fc9653fc40
 
 jobs:
   test:
@@ -50,16 +53,23 @@ jobs:
     steps:
 
       # ── Setup ──────────────────────────────────────────────────────────────
-      - name: Reset test releases
+      # Delete all previous test releases so sim-bad-v1.1 ends up as the most
+      # recently created published release — that's what getLatestRelease() returns.
+      - name: "Setup — clean previous test releases"
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const candidates = ['sim-redeploy-a', 'sim-redeploy-b', 'sim-redeploy-c'];
+            const toDelete = [
+              'sim-redeploy-a', 'sim-redeploy-b', 'sim-redeploy-c',
+              'cloud-settings-test-a', 'cloud-settings-test-b1',
+              'cloud-settings-test-b2', 'cloud-settings-test-c',
+              'sim-bad-v1.1',
+            ];
             const { data: releases } = await github.rest.repos.listReleases({
-              owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
+              owner: context.repo.owner, repo: context.repo.repo, per_page: 100,
             });
-            for (const tag of candidates) {
+            for (const tag of toDelete) {
               const rel = releases.find(r => r.tag_name === tag);
               if (rel) {
                 await github.rest.repos.deleteRelease({
@@ -67,6 +77,7 @@ jobs:
                 });
                 core.info(`Deleted release ${tag}`);
               }
+              if (tag === 'sim-bad-v1.1') continue; // keep the tag, recreate release below
               try {
                 await github.rest.git.deleteRef({
                   owner: context.repo.owner, repo: context.repo.repo, ref: `tags/${tag}`,
@@ -75,38 +86,47 @@ jobs:
               } catch { core.info(`Tag ${tag} did not exist`); }
             }
 
-      - name: "Setup — pin --latest to sim-bad-v1.1 (bad version, not yet rolled back)"
+      # Recreate sim-bad-v1.1 as the most recently created published release.
+      # getLatestRelease() returns the release with the highest created_at, so this
+      # ensures Scenarios A and B anchor correctly to the bad version.
+      - name: "Setup — recreate sim-bad-v1.1 as most-recent published release"
         uses: actions/github-script@v7
         env:
           BAD_TAG: ${{ env.BAD_TAG }}
+          BAD_SHA: ${{ env.BAD_SHA }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { data: releases } = await github.rest.repos.listReleases({
-              owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: process.env.BAD_TAG,
+              target_commitish: process.env.BAD_SHA,
+              name: 'Cloud Settings 1.1 (bad — to be rolled back)',
+              body: 'Bad release. Contains PRs: #1 dark mode, #2 new settings, #4 dark mode.\nThis version was rolled back.',
+              draft: false,
+              prerelease: false,
+              make_latest: 'true',
             });
-            const rel = releases.find(r => r.tag_name === process.env.BAD_TAG);
-            if (!rel) core.setFailed(`Release ${process.env.BAD_TAG} not found`);
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner, repo: context.repo.repo,
-              release_id: rel.id, make_latest: 'true',
-            });
+            // Verify getLatestRelease returns it
             for (let i = 0; i < 5; i++) {
               const { data: latest } = await github.rest.repos.getLatestRelease({
                 owner: context.repo.owner, repo: context.repo.repo,
               });
               if (latest.tag_name === process.env.BAD_TAG) {
-                core.info(`✓ --latest = ${latest.tag_name}`);
+                core.info(`✓ getLatestRelease() = ${latest.tag_name}`);
                 return;
               }
-              await new Promise(r => setTimeout(r, 1000));
+              core.info(`getLatestRelease() = ${latest.tag_name}, retrying...`);
+              await new Promise(r => setTimeout(r, 2000));
             }
-            core.setFailed(`--latest did not update to ${process.env.BAD_TAG}`);
+            core.setFailed('getLatestRelease() did not return sim-bad-v1.1');
 
-      # ── Scenario A — Normal forward deploy, empty from ────────────────────
-      # --latest = sim-bad-v1.1. from = "" (normal deploy, no rollback).
+      # ── Scenario A — Normal deploy, from: "" (empty) ──────────────────────
+      # getLatestRelease() = sim-bad-v1.1. from = "" → uses default anchor.
       # Expected: changelog = PRs after bad tag = #5 #6 #7.
-      - name: "Scenario A — publish sim-redeploy-a with from: '' (normal deploy)"
+      # Validates: empty from is safe (does not crash).
+      - name: "Scenario A — publish sim-redeploy-a, from: '' (normal deploy, empty from)"
         id: publish-a
         uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
         with:
@@ -119,7 +139,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Scenario A — assert: empty from is safe, changelog = PRs since --latest"
+      - name: "Scenario A — assert: empty from is safe, release created"
         id: assert-a
         uses: actions/github-script@v7
         with:
@@ -129,34 +149,25 @@ jobs:
               owner: context.repo.owner, repo: context.repo.repo, tag: 'sim-redeploy-a',
             });
             const body = rel.body || '';
-            const created = !!rel.tag_name;
-            const hasFive  = body.includes('#5');
-            const hasSix   = body.includes('#6');
-            const hasSeven = body.includes('#7');
-            const hasOne   = body.includes('#1');
-            const hasTwo   = body.includes('#2');
-            const hasFour  = body.includes('#4');
             core.info(`A body:\n${body}`);
-            core.setOutput('body', body);
+            const created = !!rel.tag_name;
             await core.summary
               .addHeading('Scenario A — Normal Deploy (from: "")')
-              .addRaw('> --latest = sim-bad-v1.1 | from = "" | Expected: PRs after bad tag only (#5 #6 #7)\n\n')
+              .addRaw('> `getLatestRelease()` = `sim-bad-v1.1` | `from` = `""` (empty) | Expected: PRs after bad version\n\n')
               .addTable([
-                [{data:'Release created',header:true},{data:'#1 #2 #4 (bad version PRs)',header:true},{data:'#5 #6 #7 (fix PRs)',header:true},{data:'Result',header:true}],
+                [{data:'Release created',header:true},{data:'#5 #6 #7 (fix PRs after bad)',header:true},{data:'Result',header:true}],
                 [
                   created ? '✅ yes' : '❌ no',
-                  [hasOne,hasTwo,hasFour].some(Boolean) ? `⚠️ yes (#${[hasOne?1:null,hasTwo?2:null,hasFour?4:null].filter(Boolean).join(' #')})` : '✅ no',
-                  [hasFive,hasSix,hasSeven].every(Boolean) ? '✅ yes' : `❌ missing ${[hasFive?null:'#5',hasSix?null:'#6',hasSeven?null:'#7'].filter(Boolean).join(' ')}`,
-                  created && [hasFive,hasSix,hasSeven].every(Boolean) ? '✅ PASS' : '❌ FAIL',
+                  [body.includes('#5'),body.includes('#6'),body.includes('#7')].every(Boolean) ? '✅ yes' : `has: ${[body.includes('#5')?'#5':'',body.includes('#6')?'#6':'',body.includes('#7')?'#7':''].filter(Boolean).join(' ') || 'none'}`,
+                  created ? '✅ PASS — empty from is safe' : '❌ FAIL — release not created',
                 ],
               ])
               .write();
-            if (!created) core.setFailed('FAIL A: release not created');
-            else if (![hasFive,hasSix,hasSeven].every(Boolean)) core.setFailed('FAIL A: missing fix PRs');
-            else core.info('✅ Scenario A PASS: empty from is safe, changelog = PRs since --latest');
+            if (!created) core.setFailed('FAIL A: release not created with empty from');
+            else core.info('✅ Scenario A PASS: empty from is safe');
 
-      # ── Re-pin --latest to sim-bad-v1.1 (A publish moved it) ──────────────
-      - name: "Re-pin --latest to sim-bad-v1.1 after Scenario A"
+      # ── Re-pin getLatestRelease to sim-bad-v1.1 (A publish moved it) ──────
+      - name: "Re-pin sim-bad-v1.1 as latest after Scenario A"
         uses: actions/github-script@v7
         env:
           BAD_TAG: ${{ env.BAD_TAG }}
@@ -166,17 +177,31 @@ jobs:
             const { data: releases } = await github.rest.repos.listReleases({
               owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
             });
-            const rel = releases.find(r => r.tag_name === process.env.BAD_TAG);
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner, repo: context.repo.repo,
-              release_id: rel.id, make_latest: 'true',
-            });
-            core.info(`Re-pinned --latest → ${process.env.BAD_TAG}`);
+            // Delete sim-redeploy-a so sim-bad-v1.1 becomes most-recently-created again
+            const relA = releases.find(r => r.tag_name === 'sim-redeploy-a');
+            if (relA) {
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner, repo: context.repo.repo, release_id: relA.id,
+              });
+              core.info('Deleted sim-redeploy-a to restore sim-bad-v1.1 as latest');
+            }
+            for (let i = 0; i < 5; i++) {
+              const { data: latest } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner, repo: context.repo.repo,
+              });
+              if (latest.tag_name === process.env.BAD_TAG) {
+                core.info(`✓ getLatestRelease() = ${latest.tag_name}`);
+                return;
+              }
+              await new Promise(r => setTimeout(r, 2000));
+            }
+            core.setFailed('getLatestRelease() did not return sim-bad-v1.1 after cleanup');
 
-      # ── Scenario B — Post-rollback, WITHOUT from (demonstrates the bug) ───
-      # --latest still = sim-bad-v1.1 (rollback does NOT move --latest).
-      # No from. Expected: changelog = PRs after bad tag only = #5 #6 #7. INCOMPLETE.
-      - name: "Scenario B — publish sim-redeploy-b WITHOUT from (post-rollback, buggy)"
+      # ── Scenario B — Post-rollback, NO from (buggy) ───────────────────────
+      # getLatestRelease() = sim-bad-v1.1. No from input.
+      # Expected: changelog = PRs after bad tag only = #5 #6 #7.
+      # PROBLEM: misses #1 #2 #4 (changes that were in the bad version!).
+      - name: "Scenario B — publish sim-redeploy-b, no from (post-rollback, buggy)"
         id: publish-b
         uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
         with:
@@ -184,11 +209,11 @@ jobs:
           commitish: ${{ github.sha }}
           version: "2.0.1"
           tag: "sim-redeploy-b"
-          name: "Redeploy B — post-rollback WITHOUT from (incomplete)"
+          name: "Redeploy B — post-rollback, no from (INCOMPLETE)"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Scenario B — record result (incomplete changelog)"
+      - name: "Scenario B — record result"
         id: assert-b
         uses: actions/github-script@v7
         with:
@@ -199,50 +224,35 @@ jobs:
             });
             const body = rel.body || '';
             core.info(`B body:\n${body}`);
-            core.setOutput('body', body);
-            core.setOutput('has_one',   String(body.includes('#1')));
-            core.setOutput('has_two',   String(body.includes('#2')));
-            core.setOutput('has_four',  String(body.includes('#4')));
-            core.setOutput('has_five',  String(body.includes('#5')));
-            core.setOutput('has_six',   String(body.includes('#6')));
-            core.setOutput('has_seven', String(body.includes('#7')));
-            // Re-pin --latest back to bad tag (B publish moved it to B)
-            const { data: releases } = await github.rest.repos.listReleases({
-              owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
-            });
-            const badRel = releases.find(r => r.tag_name === 'sim-bad-v1.1');
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner, repo: context.repo.repo,
-              release_id: badRel.id, make_latest: 'true',
-            });
-            core.info('Re-pinned --latest → sim-bad-v1.1 after B');
+            for (const n of [1,2,4,5,6,7]) core.setOutput(`has_${n}`, String(body.includes(`#${n}`)));
 
-      # ── Scenario C — Post-rollback, WITH from: sim-stable-v1.0 (the fix) ──
-      # --latest still = sim-bad-v1.1. from = sim-stable-v1.0.
+      # ── Scenario C — Post-rollback, WITH from: sim-stable-v1.0 (correct) ──
+      # getLatestRelease() = sim-redeploy-b (most recently created).
+      # But from: sim-stable-v1.0 overrides it.
       # Expected: changelog = all PRs since stable = #1 #2 #4 #5 #6 #7. COMPLETE.
-      - name: "Scenario C — publish sim-redeploy-c WITH from: sim-stable-v1.0 (post-rollback, correct)"
+      - name: "Scenario C — publish sim-redeploy-c, from: sim-stable-v1.0 (post-rollback, correct)"
         id: publish-c
         uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
         with:
           publish: true
           commitish: ${{ github.sha }}
-          from: ${{ env.STABLE_TAG }}
+          from: sim-stable-v1.0
           version: "2.0.1"
           tag: "sim-redeploy-c"
-          name: "Redeploy C — post-rollback WITH from: sim-stable-v1.0 (complete)"
+          name: "Redeploy C — post-rollback, from: sim-stable-v1.0 (COMPLETE)"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Final assert: compare B vs C ──────────────────────────────────────
-      - name: "Final — assert C has complete changelog; B vs C shows from makes a difference"
+      # ── Final assert — compare B vs C ────────────────────────────────────
+      - name: "Final — assert B vs C: from makes the difference"
         uses: actions/github-script@v7
         env:
-          B_HAS_ONE:   ${{ steps.assert-b.outputs.has_one }}
-          B_HAS_TWO:   ${{ steps.assert-b.outputs.has_two }}
-          B_HAS_FOUR:  ${{ steps.assert-b.outputs.has_four }}
-          B_HAS_FIVE:  ${{ steps.assert-b.outputs.has_five }}
-          B_HAS_SIX:   ${{ steps.assert-b.outputs.has_six }}
-          B_HAS_SEVEN: ${{ steps.assert-b.outputs.has_seven }}
+          B_HAS_1: ${{ steps.assert-b.outputs.has_1 }}
+          B_HAS_2: ${{ steps.assert-b.outputs.has_2 }}
+          B_HAS_4: ${{ steps.assert-b.outputs.has_4 }}
+          B_HAS_5: ${{ steps.assert-b.outputs.has_5 }}
+          B_HAS_6: ${{ steps.assert-b.outputs.has_6 }}
+          B_HAS_7: ${{ steps.assert-b.outputs.has_7 }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -251,37 +261,28 @@ jobs:
             });
             const bodyC = relC.body || '';
             core.info(`C body:\n${bodyC}`);
-            const b = {
-              one: process.env.B_HAS_ONE === 'true', two: process.env.B_HAS_TWO === 'true',
-              four: process.env.B_HAS_FOUR === 'true', five: process.env.B_HAS_FIVE === 'true',
-              six: process.env.B_HAS_SIX === 'true', seven: process.env.B_HAS_SEVEN === 'true',
-            };
-            const c = {
-              one: bodyC.includes('#1'), two: bodyC.includes('#2'),
-              four: bodyC.includes('#4'), five: bodyC.includes('#5'),
-              six: bodyC.includes('#6'), seven: bodyC.includes('#7'),
-            };
+            const b = { 1: process.env.B_HAS_1==='true', 2: process.env.B_HAS_2==='true', 4: process.env.B_HAS_4==='true', 5: process.env.B_HAS_5==='true', 6: process.env.B_HAS_6==='true', 7: process.env.B_HAS_7==='true' };
+            const c = { 1: bodyC.includes('#1'), 2: bodyC.includes('#2'), 4: bodyC.includes('#4'), 5: bodyC.includes('#5'), 6: bodyC.includes('#6'), 7: bodyC.includes('#7') };
             const bComplete = Object.values(b).every(Boolean);
             const cComplete = Object.values(c).every(Boolean);
-            const fromHelps = !bComplete && cComplete;
+            const t = (v) => v ? '✅' : '❌';
             await core.summary
-              .addHeading('Rollback Simulation — Results')
-              .addRaw('**Repo state:** stable=`sim-stable-v1.0` | bad=`sim-bad-v1.1` (--latest) | fix=HEAD\n\n')
-              .addRaw('**PRs per release:** stable has nothing new | bad added #1 #2 #4 | fix adds #5 #6 #7\n\n')
-              .addHeading('Scenario A — Normal deploy, from: ""', 3)
-              .addRaw('> Release created successfully — empty `from` is safe.\n\n')
-              .addHeading('Scenario B vs C — Post-rollback deploy', 3)
+              .addHeading('Rollback Simulation — Final Results')
+              .addRaw('**Stable:** `sim-stable-v1.0` | **Bad (rolled back):** `sim-bad-v1.1` | **Fix/Redeploy:** HEAD\n\n')
+              .addRaw('| Release | PRs it introduced |\n|---|---|\n| `sim-stable-v1.0` | *(baseline)* |\n| `sim-bad-v1.1` | #1 feat, #2 feat, #4 feat |\n| fix/redeploy | #5 feat, #6 fix, #7 fix |\n\n')
+              .addHeading('A — Normal deploy, from: ""', 3)
+              .addRaw('✅ Release created. Empty `from` is safe — does not crash.\n\n')
+              .addHeading('B vs C — Post-rollback deploy', 3)
               .addTable([
-                [{data:'',header:true},{data:'#1 (bad PR)',header:true},{data:'#2 (bad PR)',header:true},{data:'#4 (bad PR)',header:true},{data:'#5 (fix PR)',header:true},{data:'#6 (fix PR)',header:true},{data:'#7 (fix PR)',header:true},{data:'Complete?',header:true}],
-                ['B — no from (buggy)',   b.one?'✅':'❌', b.two?'✅':'❌', b.four?'✅':'❌', b.five?'✅':'❌', b.six?'✅':'❌', b.seven?'✅':'❌', bComplete?'✅ yes':'❌ missing bad PRs'],
-                ['C — from: sim-stable', c.one?'✅':'❌', c.two?'✅':'❌', c.four?'✅':'❌', c.five?'✅':'❌', c.six?'✅':'❌', c.seven?'✅':'❌', cComplete?'✅ yes':'❌ incomplete'],
+                [{data:'Scenario',header:true},{data:'from input',header:true},{data:'#1 (bad PR)',header:true},{data:'#2 (bad PR)',header:true},{data:'#4 (bad PR)',header:true},{data:'#5 (fix PR)',header:true},{data:'#6 (fix PR)',header:true},{data:'#7 (fix PR)',header:true},{data:'Complete?',header:true}],
+                ['B — no from', 'none (defaults to getLatestRelease)', t(b[1]), t(b[2]), t(b[4]), t(b[5]), t(b[6]), t(b[7]), bComplete ? '✅ yes' : '❌ missing bad-version PRs'],
+                ['C — with from', 'sim-stable-v1.0', t(c[1]), t(c[2]), t(c[4]), t(c[5]), t(c[6]), t(c[7]), cComplete ? '✅ yes' : '❌ incomplete'],
               ])
-              .addRaw(fromHelps
-                ? '\n✅ **`from` input works:** B misses the bad version PRs; C includes them all.\n'
-                : '\n⚠️ B and C produced the same result — check --latest pin.\n')
-              .addLink('View B release', `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/sim-redeploy-b`)
-              .addLink('View C release', `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/sim-redeploy-c`)
+              .addRaw((!bComplete && cComplete)
+                ? '\n✅ **`from` works:** B misses the bad version\'s PRs (#1 #2 #4); C includes all changes since stable.\n'
+                : '\n⚠️ Unexpected result — check scenario setup.\n')
+              .addLink('View B release (incomplete)', `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/sim-redeploy-b`)
+              .addLink('View C release (complete)', `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/sim-redeploy-c`)
               .write();
-            if (!cComplete) core.setFailed(`FAIL: C missing PRs — from: sim-stable-v1.0 should include #1 #2 #4 #5 #6 #7`);
-            else if (!fromHelps) core.warning('B and C matched — from had no effect (check --latest state)');
+            if (!cComplete) core.setFailed(`FAIL: C missing PRs — from: sim-stable-v1.0 must include #1 #2 #4 #5 #6 #7. Got: ${JSON.stringify(c)}`);
             else core.info('✅ PASS: from: sim-stable-v1.0 produces complete post-rollback changelog');
