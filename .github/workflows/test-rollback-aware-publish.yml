@@ -93,7 +93,7 @@ jobs:
 
       - name: "Scenario A — publish Cloud Settings 1.2.0 WITH from: --latest"
         id: publish-a
-        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0
         with:
           publish: true
           commitish: ${{ github.sha }}
@@ -173,7 +173,7 @@ jobs:
       # So B1 and B2 should produce the same result — proving from is consistent with default.
       - name: "Scenario B1 — publish 1.2.1-no-from WITHOUT from"
         id: publish-b1
-        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0
         with:
           publish: true
           commitish: ${{ github.sha }}
@@ -222,7 +222,7 @@ jobs:
 
       - name: "Scenario B2 — publish 1.2.1 WITH from: --latest"
         id: publish-b2
-        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0
         with:
           publish: true
           commitish: ${{ github.sha }}
@@ -328,7 +328,7 @@ jobs:
 
       - name: "Scenario C — publish initial release with from: '' (empty)"
         id: publish-c
-        uses: release-drafter/release-drafter@f259c0ada5376557cd49e74487398301fab5287a
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0
         with:
           publish: true
           commitish: ${{ github.sha }}
