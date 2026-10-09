@@ -3,12 +3,12 @@ name: Test Rollback-Aware Publish
 # Tests `from` input behavior with release-drafter v7.10.0.
 #
 # Scenario A — normal forward deploy:
-#   Publish with from: --latest (cloud-settings-1.1.2). Changelog should include PRs after 1.1.2.
+#   Publish with from: --latest (cloud-settings-1.1.3). Changelog should include PRs after 1.1.2.
 #
 # Scenario B — rollback case:
-#   --latest pinned to cloud-settings-1.1.2 (simulates rollback from a higher bad version).
+#   --latest pinned to cloud-settings-1.1.3 (simulates rollback from a higher bad version).
 #   B1 — without from: defaults to getLatestRelease() = 1.1.2.
-#   B2 — with from: cloud-settings-1.1.2 (explicit). Changelog identical to B1.
+#   B2 — with from: cloud-settings-1.1.3 (explicit). Changelog identical to B1.
 #   Key assertion: both should include PRs #5, #6, #7 (merged after 1.1.2 in history).
 #
 # Scenario C — empty from:
@@ -57,9 +57,9 @@ jobs:
               } catch { core.info(`Tag ${tag} did not exist`); }
             }
 
-      # ── Pin --latest to cloud-settings-1.1.2 ─────────────────────────────
+      # ── Pin --latest to cloud-settings-1.1.3 ─────────────────────────────
       # 1.1.2 exists and has commits/PRs after it in main history.
-      - name: "Pin --latest to cloud-settings-1.1.2 and verify"
+      - name: "Pin --latest to cloud-settings-1.1.3 and verify"
         id: pin
         uses: actions/github-script@v7
         with:
@@ -68,8 +68,8 @@ jobs:
             const { data: releases } = await github.rest.repos.listReleases({
               owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
             });
-            const rel = releases.find(r => r.tag_name === 'cloud-settings-1.1.2');
-            if (!rel) core.setFailed('cloud-settings-1.1.2 release not found — run setup first');
+            const rel = releases.find(r => r.tag_name === 'cloud-settings-1.1.3');
+            if (!rel) core.setFailed('cloud-settings-1.1.3 release not found — run setup first');
             await github.rest.repos.updateRelease({
               owner: context.repo.owner, repo: context.repo.repo,
               release_id: rel.id, make_latest: 'true',
@@ -78,7 +78,7 @@ jobs:
               const { data: latest } = await github.rest.repos.getLatestRelease({
                 owner: context.repo.owner, repo: context.repo.repo,
               });
-              if (latest.tag_name === 'cloud-settings-1.1.2') {
+              if (latest.tag_name === 'cloud-settings-1.1.3') {
                 core.info(`--latest confirmed: ${latest.tag_name}`);
                 core.setOutput('tag', latest.tag_name);
                 return;
@@ -86,7 +86,7 @@ jobs:
               core.info(`--latest is ${latest.tag_name}, waiting... (attempt ${i+1})`);
               await new Promise(r => setTimeout(r, 1000));
             }
-            core.setFailed('--latest did not update to cloud-settings-1.1.2');
+            core.setFailed('--latest did not update to cloud-settings-1.1.3');
 
       # ── Scenario A — publish with from: --latest ──────────────────────────
       - name: "Scenario A — publish cloud-settings-test-a WITH from: 1.1.2"
@@ -118,14 +118,14 @@ jobs:
             core.info(`A body:\n${body}`);
             const hasContent = body.trim().length > 0 && !body.includes('No changes');
             await core.summary
-              .addHeading('Scenario A — Normal Deploy (from: cloud-settings-1.1.2)')
+              .addHeading('Scenario A — Normal Deploy (from: cloud-settings-1.1.3)')
               .addTable([
                 [{data:'from',header:true},{data:'Has changelog content',header:true},{data:'Result',header:true}],
                 [process.env.FROM_TAG, String(hasContent), hasContent ? '✅ Correct' : '❌ Empty changelog'],
               ])
               .addLink('View release', rel.html_url)
               .write();
-            if (!hasContent) core.setFailed('FAIL: Scenario A changelog is empty with from: cloud-settings-1.1.2');
+            if (!hasContent) core.setFailed('FAIL: Scenario A changelog is empty with from: cloud-settings-1.1.3');
             else core.info('✅ Scenario A PASS: from: 1.1.2 → non-empty changelog');
 
       # ── Scenario B — rollback: --latest still pinned to 1.1.2 ─────────────
@@ -165,13 +165,13 @@ jobs:
             const { data: releases } = await github.rest.repos.listReleases({
               owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
             });
-            const rel12 = releases.find(r => r.tag_name === 'cloud-settings-1.1.2');
+            const rel12 = releases.find(r => r.tag_name === 'cloud-settings-1.1.3');
             if (rel12) {
               await github.rest.repos.updateRelease({
                 owner: context.repo.owner, repo: context.repo.repo,
                 release_id: rel12.id, make_latest: 'true',
               });
-              core.info('Re-pinned --latest → cloud-settings-1.1.2 after B1');
+              core.info('Re-pinned --latest → cloud-settings-1.1.3 after B1');
             }
 
       - name: "Scenario B2 — publish WITH from: 1.1.2 (explicit)"
@@ -210,11 +210,11 @@ jobs:
               .addTable([
                 [{data:'Test',header:true},{data:'Anchor',header:true},{data:'Has changelog content',header:true},{data:'Result',header:true}],
                 ['B1 — without from','getLatestRelease() = 1.1.2 (--latest)',String(b1HasContent), b1HasContent ? '✅' : '❌'],
-                ['B2 — with from: 1.1.2','cloud-settings-1.1.2 (explicit)',String(b2HasContent), b2HasContent ? '✅' : '❌'],
+                ['B2 — with from: 1.1.2','cloud-settings-1.1.3 (explicit)',String(b2HasContent), b2HasContent ? '✅' : '❌'],
               ])
               .addLink('View B2 release', rel.html_url)
               .write();
-            if (!b2HasContent) core.setFailed('FAIL: B2 changelog is empty even with from: cloud-settings-1.1.2');
+            if (!b2HasContent) core.setFailed('FAIL: B2 changelog is empty even with from: cloud-settings-1.1.3');
             else core.info('✅ Scenario B PASS: both B1 and B2 produce changelog with from: 1.1.2');
 
       # ── Scenario C — empty from ────────────────────────────────────────────
