@@ -167,24 +167,36 @@ jobs:
             else core.info('✅ Scenario A PASS: empty from is safe');
 
       # ── Re-pin getLatestRelease to sim-bad-v1.1 (A publish moved it) ──────
+      # Recreate sim-bad-v1.1 so its created_at is the most recent — that's what
+      # getLatestRelease() sorts by. Deleting sim-redeploy-a alone leaves no
+      # make_latest release and getLatestRelease returns 404.
       - name: "Re-pin sim-bad-v1.1 as latest after Scenario A"
         uses: actions/github-script@v7
         env:
           BAD_TAG: ${{ env.BAD_TAG }}
+          BAD_SHA: ${{ env.BAD_SHA }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { data: releases } = await github.rest.repos.listReleases({
               owner: context.repo.owner, repo: context.repo.repo, per_page: 50,
             });
-            // Delete sim-redeploy-a so sim-bad-v1.1 becomes most-recently-created again
-            const relA = releases.find(r => r.tag_name === 'sim-redeploy-a');
-            if (relA) {
+            // Delete sim-bad-v1.1 and recreate it so created_at is most recent
+            const badRel = releases.find(r => r.tag_name === process.env.BAD_TAG);
+            if (badRel) {
               await github.rest.repos.deleteRelease({
-                owner: context.repo.owner, repo: context.repo.repo, release_id: relA.id,
+                owner: context.repo.owner, repo: context.repo.repo, release_id: badRel.id,
               });
-              core.info('Deleted sim-redeploy-a to restore sim-bad-v1.1 as latest');
             }
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              tag_name: process.env.BAD_TAG,
+              target_commitish: process.env.BAD_SHA,
+              name: 'Cloud Settings 1.1 (bad — to be rolled back)',
+              body: 'Bad release. Contains PRs: #1 dark mode, #2 new settings, #4 dark mode.\nThis version was rolled back.',
+              draft: false, prerelease: false, make_latest: 'true',
+            });
+            core.info(`Recreated ${process.env.BAD_TAG} as most-recently-created release`);
             for (let i = 0; i < 5; i++) {
               const { data: latest } = await github.rest.repos.getLatestRelease({
                 owner: context.repo.owner, repo: context.repo.repo,
