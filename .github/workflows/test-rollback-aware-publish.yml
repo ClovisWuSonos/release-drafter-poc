@@ -298,3 +298,207 @@ jobs:
               .write();
             if (!cComplete) core.setFailed(`FAIL: C missing PRs — from: sim-stable-v1.0 must include #1 #2 #4 #5 #6 #7. Got: ${JSON.stringify(c)}`);
             else core.info('✅ PASS: from: sim-stable-v1.0 produces complete post-rollback changelog');
+
+      # ══════════════════════════════════════════════════════════════════════
+      # CORNER CASES — observing release-drafter behavior, not asserting pass/fail
+      # ══════════════════════════════════════════════════════════════════════
+
+      # ── Corner Case D — from: non-existent tag ────────────────────────────
+      # What does release-drafter do when the tag passed to from doesn't exist?
+      # Expected hypothesis: errors out (action fails) or silently falls back to default.
+      - name: "Corner D — publish with from: tag-does-not-exist (observe behavior)"
+        id: publish-d
+        continue-on-error: true
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          publish: true
+          commitish: ${{ github.sha }}
+          from: "this-tag-does-not-exist"
+          version: "2.1.0"
+          tag: "sim-corner-d"
+          name: "Corner D — from: non-existent tag"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Corner D — record outcome"
+        uses: actions/github-script@v7
+        env:
+          STEP_OUTCOME: ${{ steps.publish-d.outcome }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const outcome = process.env.STEP_OUTCOME; // 'success' | 'failure' | 'skipped'
+            let body = '(release not created)';
+            try {
+              const { data: rel } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner, repo: context.repo.repo, tag: 'sim-corner-d',
+              });
+              body = rel.body || '(empty)';
+            } catch {}
+            core.info(`D outcome: ${outcome}`);
+            core.info(`D body: ${body}`);
+            await core.summary
+              .addHeading('Corner D — from: non-existent tag')
+              .addTable([
+                [{data:'from input',header:true},{data:'Step outcome',header:true},{data:'Changelog body',header:true}],
+                ['this-tag-does-not-exist', outcome, body.slice(0, 200)],
+              ])
+              .write();
+
+      # ── Corner Case E — from: tag at HEAD (same commit as commitish) ──────
+      # What if from points to the exact same commit being deployed?
+      # Expected hypothesis: empty changelog (nothing between HEAD and HEAD).
+      - name: "Corner E — create temp tag at HEAD"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner, repo: context.repo.repo,
+                ref: 'tags/sim-corner-e-anchor',
+              });
+            } catch {}
+            await github.rest.git.createRef({
+              owner: context.repo.owner, repo: context.repo.repo,
+              ref: 'refs/tags/sim-corner-e-anchor',
+              sha: context.sha,
+            });
+            core.info(`Created sim-corner-e-anchor at HEAD (${context.sha})`);
+
+      - name: "Corner E — publish with from: tag at HEAD (same as commitish)"
+        id: publish-e
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          publish: true
+          commitish: ${{ github.sha }}
+          from: "sim-corner-e-anchor"
+          version: "2.1.1"
+          tag: "sim-corner-e"
+          name: "Corner E — from: tag at HEAD"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Corner E — record outcome"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: rel } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner, repo: context.repo.repo, tag: 'sim-corner-e',
+            });
+            const body = rel.body || '(empty)';
+            core.info(`E body: ${body}`);
+            await core.summary
+              .addHeading('Corner E — from: tag at HEAD (same as commitish)')
+              .addTable([
+                [{data:'from input',header:true},{data:'Changelog body',header:true},{data:'Expected',header:true}],
+                ['sim-corner-e-anchor (= HEAD)', body.slice(0, 200), 'No changes (nothing between HEAD and HEAD)'],
+              ])
+              .write();
+
+      # ── Corner Case F — First deploy ever (no prior releases, from: "") ───
+      # Uses a tag prefix no release has ever used — getLatestRelease() for this
+      # context would find no matching release. from: "" falls to default.
+      # Expected hypothesis: release created, changelog contains all PRs ever.
+      - name: "Corner F — publish with from: '' when no prior release exists for this tag prefix"
+        id: publish-f
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          publish: true
+          commitish: ${{ github.sha }}
+          from: ""
+          version: "1.0.0"
+          tag: "sim-corner-f-first"
+          name: "Corner F — first-ever deploy, from: empty"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Corner F — record outcome"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: rel } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner, repo: context.repo.repo, tag: 'sim-corner-f-first',
+            });
+            const body = rel.body || '(empty)';
+            const created = !!rel.tag_name;
+            core.info(`F body: ${body}`);
+            await core.summary
+              .addHeading('Corner F — First deploy ever, from: ""')
+              .addTable([
+                [{data:'from input',header:true},{data:'Release created',header:true},{data:'Has changelog',header:true}],
+                ['(empty)', created ? '✅ yes' : '❌ no', body.includes('#') ? '✅ yes' : '⚠️ no PRs'],
+              ])
+              .write();
+            if (!created) core.setFailed('FAIL F: release not created');
+            else core.info('✅ Corner F PASS: first deploy with empty from is safe');
+
+      # ── Corner Case G — from: equals the tag being deployed ───────────────
+      # Caller accidentally passes the same version they're deploying as from.
+      # Expected hypothesis: empty changelog (comparing a tag to itself).
+      - name: "Corner G — publish with from: equal to the tag being deployed"
+        id: publish-g
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          publish: true
+          commitish: ${{ github.sha }}
+          from: "sim-stable-v1.0"
+          version: "2.2.0"
+          tag: "sim-corner-g"
+          name: "Corner G — first publish (from: sim-stable-v1.0)"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Corner G — now redeploy with from: = tag just published"
+        id: publish-g2
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          publish: true
+          commitish: ${{ github.sha }}
+          from: "sim-corner-g"
+          version: "2.2.1"
+          tag: "sim-corner-g2"
+          name: "Corner G2 — from: equals previously deployed tag (same commit)"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Corner G — record outcome"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: rel } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner, repo: context.repo.repo, tag: 'sim-corner-g2',
+            });
+            const body = rel.body || '(empty)';
+            core.info(`G2 body: ${body}`);
+            await core.summary
+              .addHeading('Corner G — from: equals the previously deployed tag (same commit as HEAD)')
+              .addTable([
+                [{data:'from input',header:true},{data:'Changelog body',header:true},{data:'Expected',header:true}],
+                ['sim-corner-g (= HEAD)', body.slice(0, 200), 'No changes (self-reference)'],
+              ])
+              .write();
+
+      # ── Corner Case Summary ───────────────────────────────────────────────
+      - name: "Corner Cases — print summary"
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          D_OUTCOME: ${{ steps.publish-d.outcome }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const d = process.env.D_OUTCOME;
+            await core.summary
+              .addHeading('Corner Cases Summary')
+              .addTable([
+                [{data:'Case',header:true},{data:'Scenario',header:true},{data:'Observed behavior',header:true}],
+                ['D', 'from: non-existent tag',    d === 'failure' ? '❌ action errors out — caller must validate' : d === 'success' ? '⚠️ silent fallback (check body)' : d],
+                ['E', 'from: tag at HEAD',          'see Corner E summary above'],
+                ['F', 'first deploy, from: ""',     'see Corner F summary above'],
+                ['G', 'from: = tag just deployed',  'see Corner G summary above'],
+              ])
+              .write();
