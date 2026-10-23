@@ -1,0 +1,487 @@
+---
+name: Send Datadog Deployment Event
+description: Send deployment notifications to Datadog with Slack integration for Argo/Kubernetes,
+  Ansible/EC2, and Terraform/EC2 deployments
+inputs:
+  event-type:
+    description: Event type (pre-deployment|post-deployment)
+    required: true
+  service:
+    description: Service name
+    required: true
+  environment:
+    description: Deployment environment (int|test|perf|stage|prod)
+    required: true
+  regions:
+    description: AWS regions being deployed to
+    required: true
+  version:
+    description: Current deployment version
+    required: true
+  tag-prefix:
+    description: Prefix the service's release tags use ahead of the version (e.g.
+      'account-service-' so version 1.2.3 tags as account-service-1.2.3, or '' if
+      the service tags bare versions). Used to link directly to the release once a
+      post-deployment succeeds.
+    required: true
+  app-deployed:
+    description: 'Whether an actual application version was deployed this run (false
+      for e.g. deploy-scope: infra-only, where version is just a placeholder). When
+      false, the Release notes and Rollback links are omitted entirely -- there''s
+      nothing app-shaped to point at -- and it contributes to the Deploy Scope field.'
+    required: false
+    default: 'true'
+  terraform-changes-applied:
+    description: 'Whether terraform actually applied a change this run. When true
+      on a post-deployment event, an Infra changes link is added so infra changes
+      (excluded from release notes) stay visible. Naturally false for deploy-scope:
+      app-only, since terraform never ran -- no separate scope check needed.'
+    required: false
+    default: 'false'
+  terraform-scoped:
+    description: Whether this deploy's scope includes terraform (deploy-scope != app-only).
+      Combined with app-deployed to compute the Deploy Scope field shown in the notification
+      (App-only | Infra-only | Infra and App), and gates the pre-deployment Job Summary
+      link -- omitted for app-only, since terraform never runs.
+    required: false
+    default: 'false'
+  commit-sha:
+    description: 'Current commit SHA: what this deploy ships (the new end of the Compare
+      changes range). Used with previous-region-info for non-prod environments.'
+    required: false
+    default: ''
+  previous-region-info:
+    description: 'JSON of what was deployed to each region before this run, shaped
+      {"us-east-1": {"sha": "...", "version": "..."}} (the region-info output of argo-get-env-info,
+      read before the deploy). Used with commit-sha to build the Compare changes link
+      for non-prod environments; when empty or unusable, no compare link is shown.'
+    required: false
+    default: ''
+  deployer:
+    description: GitHub handle of the user who triggered the deployment
+    required: true
+  alert-type:
+    description: Alert type (info|error|warning|success). For post-deployment events,
+      set success, error, or warning; the info default is only valid for pre-deployment
+      and fails the job if left set on post-deployment. Any other unexpected/empty
+      value (e.g. an upstream job dying before setting its output) is reported as
+      Failed with a warning, rather than failing the job.
+    required: false
+    default: info
+  compute-platform:
+    description: Compute platform (argo|ansible|terraform)
+    required: false
+    default: argo
+  operation-type:
+    description: Operation type (deploy|rollback)
+    required: false
+    default: deploy
+  team:
+    description: Team tag value (used as team:<team>)
+    required: false
+    default: platform
+  dashboard-url:
+    description: The service's primary Datadog dashboard URL
+    required: false
+    default: ''
+  datadog-api-key:
+    description: Datadog API key for authentication
+    required: true
+  datadog-api-url:
+    description: Datadog API endpoint
+    required: false
+    default: https://app.datadoghq.com
+  continue-on-error:
+    description: Continue workflow execution even if event send fails
+    required: false
+    default: 'false'
+outputs:
+  links:
+    description: POC-only
+    value: ${{ steps.build-links.outputs.links }}
+runs:
+  using: composite
+  steps:
+  - name: Validate inputs
+    env:
+      INPUT_EVENT_TYPE: "${{ inputs.event-type }}"
+      INPUT_COMPUTE_PLATFORM: "${{ inputs.compute-platform }}"
+      INPUT_OPERATION_TYPE: "${{ inputs.operation-type }}"
+    shell: bash
+    run: |
+      case "$INPUT_EVENT_TYPE" in
+        pre-deployment|post-deployment) ;;
+        *)
+          echo "::error::event-type is not valid, expected 'pre-deployment' or 'post-deployment', received: $INPUT_EVENT_TYPE"
+          exit 1
+          ;;
+      esac
+
+      case "$INPUT_COMPUTE_PLATFORM" in
+        argo|ansible|terraform) ;;
+        *)
+          echo "::error::compute-platform is not currently known, expected 'argo', 'ansible', or 'terraform', received: $INPUT_COMPUTE_PLATFORM"
+          exit 1
+          ;;
+      esac
+
+      case "$INPUT_OPERATION_TYPE" in
+        deploy|rollback) ;;
+        *)
+          echo "::error::operation-type is not valid, expected 'deploy' or 'rollback', received: $INPUT_OPERATION_TYPE"
+          exit 1
+          ;;
+      esac
+  - name: Get Slack Channel
+    id: get-slack-channel
+    env:
+      INPUT_ENVIRONMENT: "${{ inputs.environment }}"
+    shell: bash
+    run: |
+      if [[ "$INPUT_ENVIRONMENT" == "prod" ]]; then
+        slack_channel="@slack-production-changes"
+      else
+        slack_channel="@slack-sonos-env-$INPUT_ENVIRONMENT"
+      fi
+      echo "picked $slack_channel for $INPUT_ENVIRONMENT"
+      echo "slack-channel=${slack_channel}" >> $GITHUB_OUTPUT
+  - name: Build event title
+    id: build-title
+    env:
+      INPUT_SERVICE: "${{ inputs.service }}"
+      INPUT_ENVIRONMENT: "${{ inputs.environment }}"
+      INPUT_REGIONS: "${{ inputs.regions }}"
+      INPUT_EVENT_TYPE: "${{ inputs.event-type }}"
+      INPUT_OPERATION_TYPE: "${{ inputs.operation-type }}"
+    shell: bash
+    run: |
+      PRETTY_SVC_NAME="$(echo "$INPUT_SERVICE" | awk '{gsub(/[-_]/," "); for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')"
+      SERVICE_UPPER=$(echo "${PRETTY_SVC_NAME}" | tr '[:lower:]' '[:upper:]')
+      ENV_UPPER=$(echo "$INPUT_ENVIRONMENT" | tr '[:lower:]' '[:upper:]')
+      REGIONS_PRETTY=$(echo "$INPUT_REGIONS" | jq -r 'join(", ")')
+
+      # A rollback keeps the same title regardless of pre/post — it's the
+      # status word and links that distinguish "starting" from "done".
+      if [[ "$INPUT_OPERATION_TYPE" == "rollback" ]]; then
+        NOTIFICATION_TYPE="Rollback Notification"
+      elif [[ "$INPUT_EVENT_TYPE" == "post-deployment" ]]; then
+        NOTIFICATION_TYPE="Post Deployment Notification"
+      else
+        NOTIFICATION_TYPE="Deployment Notification"
+      fi
+
+      TITLE="${NOTIFICATION_TYPE} - Service: ${SERVICE_UPPER} Environment: ${ENV_UPPER} Region(s): $REGIONS_PRETTY"
+
+      echo "title=${TITLE}" >> $GITHUB_OUTPUT
+  - name: Get Platform Name
+    id: get-platform-name
+    env:
+      INPUT_COMPUTE_PLATFORM: "${{ inputs.compute-platform }}"
+    shell: bash
+    run: |
+      case "$INPUT_COMPUTE_PLATFORM" in
+        ansible)   PLATFORM_NAME="Ansible/EC2" ;;
+        terraform) PLATFORM_NAME="Terraform/EC2" ;;
+        *)         PLATFORM_NAME="Argo/Kubernetes" ;;
+      esac
+      echo "platform-name=${PLATFORM_NAME}" >> $GITHUB_OUTPUT
+  - name: Get Deploy Scope Label
+    id: get-deploy-scope
+    env:
+      INPUT_APP_DEPLOYED: "${{ inputs.app-deployed }}"
+      INPUT_TERRAFORM_SCOPED: "${{ inputs.terraform-scoped }}"
+    shell: bash
+    run: |
+      if [[ "$INPUT_APP_DEPLOYED" == "true" && "$INPUT_TERRAFORM_SCOPED" == "true" ]]; then
+        DEPLOY_SCOPE_LABEL="Infra and App"
+      elif [[ "$INPUT_TERRAFORM_SCOPED" == "true" ]]; then
+        DEPLOY_SCOPE_LABEL="Infra-only"
+      elif [[ "$INPUT_APP_DEPLOYED" == "true" ]]; then
+        DEPLOY_SCOPE_LABEL="App-only"
+      else
+        DEPLOY_SCOPE_LABEL="Unknown"
+      fi
+      echo "label=${DEPLOY_SCOPE_LABEL}" >> $GITHUB_OUTPUT
+  - name: Get Status Word
+    id: get-status-word
+    env:
+      INPUT_EVENT_TYPE: "${{ inputs.event-type }}"
+      INPUT_OPERATION_TYPE: "${{ inputs.operation-type }}"
+      INPUT_ALERT_TYPE: "${{ inputs.alert-type }}"
+    shell: bash
+    run: "if [[ \"$INPUT_OPERATION_TYPE\" == \"rollback\" ]]; then\n  if [[ \"$INPUT_EVENT_TYPE\"
+      == \"pre-deployment\" ]]; then\n    STATUS_WORD=\"Rolling back\"\n    STATUS_EMOJI=\"\U0001F504\"\n
+      \ elif [[ \"$INPUT_ALERT_TYPE\" == \"success\" ]]; then\n    STATUS_WORD=\"Rolled
+      back\"\n    STATUS_EMOJI=\"✅\"\n  elif [[ \"$INPUT_ALERT_TYPE\" == \"error\"
+      || \"$INPUT_ALERT_TYPE\" == \"warning\" ]]; then\n    STATUS_WORD=\"Failed\"\n
+      \   STATUS_EMOJI=\"\U0001F6A8\"\n  elif [[ \"$INPUT_ALERT_TYPE\" == \"info\"
+      ]]; then\n    echo \"::error::post-deployment rollback events must set alert-type
+      to 'success', 'error', or 'warning' so the notification's status word is unambiguous
+      (got the meaningless 'info' default — set it explicitly)\"\n    exit 1\n  else\n
+      \   # Most commonly an empty string, from an upstream job that died or timed\n
+      \   # out before setting its own alert-type output. Report it as Failed rather\n
+      \   # than hard-stopping — a hard stop here happens before send-event, so\n
+      \   # continue-on-error can't cover it, and we'd lose the one notification the\n
+      \   # team most needs.\n    echo \"::warning::post-deployment rollback events
+      should set alert-type to 'success', 'error', or 'warning'; got unexpected value
+      '$INPUT_ALERT_TYPE' — reporting as Failed\"\n    STATUS_WORD=\"Failed\"\n    STATUS_EMOJI=\"\U0001F6A8\"\n
+      \ fi\nelse\n  if [[ \"$INPUT_EVENT_TYPE\" == \"pre-deployment\" ]]; then\n    STATUS_WORD=\"Deploying\"\n
+      \   STATUS_EMOJI=\"\U0001F680\"\n  elif [[ \"$INPUT_ALERT_TYPE\" == \"success\"
+      ]]; then\n    STATUS_WORD=\"Deployed\"\n    STATUS_EMOJI=\"✅\"\n  elif [[ \"$INPUT_ALERT_TYPE\"
+      == \"error\" || \"$INPUT_ALERT_TYPE\" == \"warning\" ]]; then\n    STATUS_WORD=\"Failed\"\n
+      \   STATUS_EMOJI=\"\U0001F6A8\"\n  elif [[ \"$INPUT_ALERT_TYPE\" == \"info\"
+      ]]; then\n    echo \"::error::post-deployment events must set alert-type to
+      'success', 'error', or 'warning' so the notification's status word is unambiguous
+      (got the meaningless 'info' default — set it explicitly)\"\n    exit 1\n  else\n
+      \   # Most commonly an empty string, from an upstream job that died or timed\n
+      \   # out before setting its own alert-type output. Report it as Failed rather\n
+      \   # than hard-stopping — a hard stop here happens before send-event, so\n
+      \   # continue-on-error can't cover it, and we'd lose the one notification the\n
+      \   # team most needs.\n    echo \"::warning::post-deployment events should
+      set alert-type to 'success', 'error', or 'warning'; got unexpected value '$INPUT_ALERT_TYPE'
+      — reporting as Failed\"\n    STATUS_WORD=\"Failed\"\n    STATUS_EMOJI=\"\U0001F6A8\"\n
+      \ fi\nfi\n\n# warning is treated as a failure for the status word above, so
+      the Datadog\n# alert_type sent with the event must match — otherwise Slack shows
+      a\n# warning/yellow stripe on a notification that just said \"Failed\".\nDD_ALERT_TYPE=\"$INPUT_ALERT_TYPE\"\nif
+      [[ \"$STATUS_WORD\" == \"Failed\" ]]; then\n  DD_ALERT_TYPE=\"error\"\nfi\n\necho
+      \"status-word=${STATUS_WORD}\" >> $GITHUB_OUTPUT\necho \"status-emoji=${STATUS_EMOJI}\"
+      >> $GITHUB_OUTPUT\necho \"dd-alert-type=${DD_ALERT_TYPE}\" >> $GITHUB_OUTPUT\n"
+  - name: Get Completion Time
+    if: "${{ inputs.event-type == 'post-deployment' }}"
+    id: get-completion-time
+    shell: bash
+    run: 'echo "completion-time=$(TZ=''America/New_York'' date ''+%-I:%M %p ET'')"
+      >> $GITHUB_OUTPUT
+
+'
+  - name: Build Links
+    id: build-links
+    env:
+      INPUT_SERVICE: "${{ inputs.service }}"
+      INPUT_ENVIRONMENT: "${{ inputs.environment }}"
+      INPUT_COMMIT_SHA: "${{ inputs.commit-sha }}"
+      INPUT_PREVIOUS_REGION_INFO: "${{ inputs.previous-region-info }}"
+      INPUT_VERSION: "${{ inputs.version }}"
+      INPUT_TAG_PREFIX: "${{ inputs.tag-prefix }}"
+      INPUT_APP_DEPLOYED: "${{ inputs.app-deployed }}"
+      INPUT_TERRAFORM_CHANGES_APPLIED: "${{ inputs.terraform-changes-applied }}"
+      INPUT_TERRAFORM_SCOPED: "${{ inputs.terraform-scoped }}"
+      INPUT_EVENT_TYPE: "${{ inputs.event-type }}"
+      INPUT_OPERATION_TYPE: "${{ inputs.operation-type }}"
+      INPUT_ALERT_TYPE: "${{ inputs.alert-type }}"
+      INPUT_DASHBOARD_URL: "${{ inputs.dashboard-url }}"
+      INPUT_DATADOG_API_URL: "${{ inputs.datadog-api-url }}"
+    shell: bash
+    run: |
+      rollback_url="https://github.com/${{ github.repository }}/actions/workflows/rollback.yml"
+
+      # service/datadog-api-url/version/tag-prefix feed link URLs below; unlike
+      # dashboard-url these are required or caller-fixed, so an unsafe value fails
+      # the job rather than being omitted.
+      case "$INPUT_SERVICE$INPUT_DATADOG_API_URL$INPUT_VERSION$INPUT_TAG_PREFIX" in
+        *'('*|*')'*|*'['*|*']'*|*'`'*|*' '*|*$'\t'*|*$'\n'*|*$'\r'*)
+          echo "::error::service, datadog-api-url, version, and tag-prefix must not contain markdown-breaking characters ('()[]\`' or whitespace) — received service='$INPUT_SERVICE' datadog-api-url='$INPUT_DATADOG_API_URL' version='$INPUT_VERSION' tag-prefix='$INPUT_TAG_PREFIX'"
+          exit 1
+          ;;
+      esac
+
+      monitor_url="${INPUT_DATADOG_API_URL}/monitors/manage?q=service%3A${INPUT_SERVICE}&p=1"
+
+      # Generic list before the release is published (draft tags don't resolve);
+      # the specific tag once a post-deployment succeeds.
+      if [[ "$INPUT_OPERATION_TYPE" != "rollback" && "$INPUT_EVENT_TYPE" == "post-deployment" && "$INPUT_ALERT_TYPE" == "success" && "$INPUT_APP_DEPLOYED" == "true" ]]; then
+        release_notes_url="https://github.com/${{ github.repository }}/releases/tag/${INPUT_TAG_PREFIX}${INPUT_VERSION}"
+      else
+        release_notes_url="https://github.com/${{ github.repository }}/releases"
+      fi
+
+      links=()
+
+      # Omitted for a rollback, and when app-deployed: false -- nothing shipped to link to.
+      if [[ "$INPUT_OPERATION_TYPE" != "rollback" && "$INPUT_APP_DEPLOYED" == "true" ]]; then
+        if [[ "$INPUT_ENVIRONMENT" == "prod" ]]; then
+          links+=("[Release notes](${release_notes_url})")
+        else
+          # Lower envs: the release is still a draft accumulating everything since the
+          # last prod release, so a release notes link overstates what this deploy
+          # changed. Link just previous deployed SHA -> new SHA instead: one link when
+          # every region was last deployed at the same SHA, otherwise one per region.
+          # Omitted entirely when either end is unknown (e.g. first deploy) or
+          # unchanged (a redeploy). SHAs and region names are validated since they
+          # end up inside a markdown link.
+          compare_url="https://github.com/${{ github.repository }}/compare"
+          sha_pattern='^[0-9a-fA-F]+$'
+          previous_info=$(jq -c 'select(type == "object")' <<< "$INPUT_PREVIOUS_REGION_INFO" 2>/dev/null || true)
+          if [[ "$INPUT_COMMIT_SHA" =~ $sha_pattern && -n "$previous_info" ]]; then
+            distinct_prev_shas=$(jq -r '[.[].sha // empty] | unique | length' <<< "$previous_info" 2>/dev/null || echo 0)
+            while IFS=$'\t' read -r region prev_sha; do
+              [[ "$region" =~ ^[A-Za-z0-9._-]+$ && "$prev_sha" =~ $sha_pattern && "$prev_sha" != "$INPUT_COMMIT_SHA" ]] || continue
+              if [[ "$distinct_prev_shas" == "1" ]]; then
+                links+=("[Compare changes](${compare_url}/${prev_sha}..${INPUT_COMMIT_SHA})")
+                break
+              fi
+              links+=("[Compare changes (${region})](${compare_url}/${prev_sha}..${INPUT_COMMIT_SHA})")
+            done < <(jq -r 'to_entries[] | "\(.key)\t\(.value.sha // "")"' <<< "$previous_info" 2>/dev/null || true)
+          fi
+        fi
+      fi
+
+      # dashboard-url comes from repo-metadata.json, so it's repo-controlled
+      # rather than a fixed literal. Only trust it into the notification
+      # when it's a path on the same Datadog site this deployment already
+      # talks to (not just any http(s) URL), and free of characters that
+      # could break out of the [Dashboard](url) markdown link or inject
+      # extra text into the notification.
+      dashboard_url_is_safe=true
+      if [[ "$INPUT_DASHBOARD_URL" != "${INPUT_DATADOG_API_URL}/"* ]]; then
+        dashboard_url_is_safe=false
+      fi
+      case "$INPUT_DASHBOARD_URL" in
+        *'('*|*')'*|*'['*|*']'*|*'`'*|*' '*|*$'\t'*|*$'\n'*|*$'\r'*)
+          dashboard_url_is_safe=false
+          ;;
+      esac
+
+      if [[ "$dashboard_url_is_safe" == true ]]; then
+        links+=("[Dashboard](${INPUT_DASHBOARD_URL})")
+      fi
+
+      # Monitors only mean something once a service is in prod.
+      if [[ "$INPUT_ENVIRONMENT" == "prod" ]]; then
+        links+=("[Monitor](${monitor_url})")
+      fi
+
+      # The Rollback link is only offered on a successful forward deploy that
+      # actually shipped an app version — nothing to roll back to otherwise.
+      if [[ "$INPUT_OPERATION_TYPE" != "rollback" && "$INPUT_EVENT_TYPE" == "post-deployment" && "$INPUT_ALERT_TYPE" == "success" && "$INPUT_APP_DEPLOYED" == "true" ]]; then
+        links+=("[Rollback](${rollback_url})")
+      fi
+
+      # Pre-deployment: "Job Summary" whenever terraform is scoped. Post-deployment:
+      # "Infra changes" only once terraform-changes-applied is true.
+      job_summary_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+      if [[ "$INPUT_OPERATION_TYPE" != "rollback" && "$INPUT_EVENT_TYPE" == "pre-deployment" && "$INPUT_TERRAFORM_SCOPED" == "true" ]]; then
+        links+=("[Job Summary](${job_summary_url})")
+      elif [[ "$INPUT_OPERATION_TYPE" != "rollback" && "$INPUT_EVENT_TYPE" == "post-deployment" && "$INPUT_TERRAFORM_CHANGES_APPLIED" == "true" ]]; then
+        links+=("[Infra changes](${job_summary_url})")
+      fi
+
+      links_line=$(printf '%s · ' "${links[@]}")
+      links_line="${links_line% · }"
+
+      echo "links=${links_line}" >> $GITHUB_OUTPUT
+  - name: Build pre-deployment event text
+    if: "${{ inputs.event-type == 'pre-deployment' }}"
+    id: build-pre-text
+    env:
+      INPUT_VERSION: "${{ inputs.version }}"
+      INPUT_DEPLOYER: "${{ inputs.deployer }}"
+      STATUS_EMOJI: "${{ steps.get-status-word.outputs.status-emoji }}"
+      STATUS_WORD: "${{ steps.get-status-word.outputs.status-word }}"
+      PLATFORM_NAME: "${{ steps.get-platform-name.outputs.platform-name }}"
+      DEPLOY_SCOPE_LABEL: "${{ steps.get-deploy-scope.outputs.label }}"
+      LINKS: "${{ steps.build-links.outputs.links }}"
+      SLACK_CHANNEL: "${{ steps.get-slack-channel.outputs.slack-channel }}"
+    shell: bash
+    run: |
+      EVENT_TEXT="$STATUS_EMOJI $INPUT_DEPLOYER · $STATUS_WORD · $INPUT_VERSION"
+      EVENT_TEXT="${EVENT_TEXT}"$'\n\n'"**Deployment Method:** $PLATFORM_NAME"
+      EVENT_TEXT="${EVENT_TEXT}"$'\n\n'"**Deploy Scope:** $DEPLOY_SCOPE_LABEL"
+      if [[ -n "$LINKS" ]]; then
+        EVENT_TEXT="${EVENT_TEXT}"$'\n\n'"**Links:** $LINKS"
+      fi
+      EVENT_TEXT="${EVENT_TEXT}"$'\n\n'"$SLACK_CHANNEL"
+
+      echo "text<<EOF" >> "$GITHUB_OUTPUT"
+      echo "${EVENT_TEXT}" >> "$GITHUB_OUTPUT"
+      echo "EOF" >> "$GITHUB_OUTPUT"
+  - name: Build post-deployment event text
+    if: "${{ inputs.event-type == 'post-deployment' }}"
+    id: build-post-text
+    env:
+      INPUT_VERSION: "${{ inputs.version }}"
+      INPUT_DEPLOYER: "${{ inputs.deployer }}"
+      STATUS_EMOJI: "${{ steps.get-status-word.outputs.status-emoji }}"
+      STATUS_WORD: "${{ steps.get-status-word.outputs.status-word }}"
+      COMPLETION_TIME: "${{ steps.get-completion-time.outputs.completion-time }}"
+      PLATFORM_NAME: "${{ steps.get-platform-name.outputs.platform-name }}"
+      DEPLOY_SCOPE_LABEL: "${{ steps.get-deploy-scope.outputs.label }}"
+      LINKS: "${{ steps.build-links.outputs.links }}"
+      SLACK_CHANNEL: "${{ steps.get-slack-channel.outputs.slack-channel }}"
+    shell: bash
+    run: |
+      EVENT_TEXT="$STATUS_EMOJI $INPUT_DEPLOYER · $STATUS_WORD · $INPUT_VERSION · $COMPLETION_TIME"
+      EVENT_TEXT="${EVENT_TEXT}"$'\n\n'"**Deployment Method:** $PLATFORM_NAME"
+      EVENT_TEXT="${EVENT_TEXT}"$'\n\n'"**Deploy Scope:** $DEPLOY_SCOPE_LABEL"
+      if [[ -n "$LINKS" ]]; then
+        EVENT_TEXT="${EVENT_TEXT}"$'\n\n'"**Links:** $LINKS"
+      fi
+      EVENT_TEXT="${EVENT_TEXT}"$'\n\n'"$SLACK_CHANNEL"
+
+      echo "text<<EOF" >> "$GITHUB_OUTPUT"
+      echo "${EVENT_TEXT}" >> "$GITHUB_OUTPUT"
+      echo "EOF" >> "$GITHUB_OUTPUT"
+  - name: Get final event text
+    id: final-text
+    env:
+      INPUT_EVENT_TYPE: "${{ inputs.event-type }}"
+      PRE_TEXT: "${{ steps.build-pre-text.outputs.text }}"
+      POST_TEXT: "${{ steps.build-post-text.outputs.text }}"
+    shell: bash
+    run: |
+      if [[ "$INPUT_EVENT_TYPE" == "pre-deployment" ]]; then
+        RAW_TEXT="$PRE_TEXT"
+      else
+        RAW_TEXT="$POST_TEXT"
+      fi
+
+      # Indent each line with 4 spaces to align under 'text: |' in the events YAML
+      # First line doesn't need indentation as it follows the expression expansion point
+      INDENTED_TEXT=$(echo "$RAW_TEXT" | awk 'NR==1 {print} NR>1 {print "    " $0}')
+
+      echo "text<<EOF" >> "$GITHUB_OUTPUT"
+      echo "$INDENTED_TEXT" >> "$GITHUB_OUTPUT"
+      echo "EOF" >> "$GITHUB_OUTPUT"
+  - name: Build region tags
+    id: build-region-tags
+    env:
+      INPUT_REGIONS: "${{ inputs.regions }}"
+    shell: bash
+    run: |
+      if [[ -z "$INPUT_REGIONS" ]]; then
+        echo "region-tags=" >> "$GITHUB_OUTPUT"
+        exit 0
+      fi
+
+      regions_raw="$INPUT_REGIONS"
+
+      tag_lines=()
+      first=true
+      while IFS= read -r region; do
+        region_trimmed=$(echo "$region" | xargs)
+        if [[ -n "$region_trimmed" ]]; then
+          # need to align propertly under the tags: block in the events YAML, so only indent if it's not the first tag line
+          if [[ "$first" == "true" ]]; then
+            tag_lines+=("- \"region:${region_trimmed}\"")
+            first=false
+          else
+            tag_lines+=("    - \"region:${region_trimmed}\"")
+          fi
+        fi
+      done < <(echo "$regions_raw" | jq -r '.[]')
+
+      if [[ ${#tag_lines[@]} -eq 0 ]]; then
+        echo "region-tags=" >> "$GITHUB_OUTPUT"
+        exit 0
+      fi
+
+      echo "region-tags<<EOF" >> "$GITHUB_OUTPUT"
+      printf "%s\n" "${tag_lines[@]}" >> "$GITHUB_OUTPUT"
+      echo "EOF" >> "$GITHUB_OUTPUT"
+  - name: Print event text
+    shell: bash
+    env:
+      TEXT: "${{ steps.final-text.outputs.text }}"
+    run: '{ echo "```"; echo "$TEXT"; echo "```"; } >> "$GITHUB_STEP_SUMMARY"
+
+'

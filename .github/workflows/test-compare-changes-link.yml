@@ -1,0 +1,122 @@
+# POC-only validation of the Compare changes link. Manual trigger only.
+# The action under test has its Datadog send step removed, so nothing leaves
+# this repo: no Datadog call, no Slack message.
+name: test-compare-changes-link
+on:
+  workflow_dispatch:
+  push:
+    branches: [validate-compare-changes]
+permissions:
+  contents: read
+jobs:
+  scenario:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: int pre deploy
+            env: int
+            event: pre-deployment
+            commit: e4f5a6b
+            prev: '{"us-east-1":{"sha":"a1b2c3d"}}'
+            expect_has: "[Compare changes](https://github.com/${{ github.repository }}/compare/a1b2c3d..e4f5a6b)"
+            expect_not: "Release notes|Monitor"
+          - name: int post success
+            env: int
+            event: post-deployment
+            alert: success
+            commit: e4f5a6b
+            prev: '{"us-east-1":{"sha":"a1b2c3d"}}'
+            expect_has: "compare/a1b2c3d..e4f5a6b"
+            expect_not: "Release notes|Monitor"
+          - name: int two regions differing sha
+            env: int
+            event: pre-deployment
+            regions: '["us-east-1","eu-west-1"]'
+            commit: e4f5a6b
+            prev: '{"us-east-1":{"sha":"a1b2c3d"},"eu-west-1":{"sha":"9999999"}}'
+            expect_has: "Compare changes (eu-west-1)"
+            expect_not: "Release notes|Monitor"
+          - name: int redeploy same sha
+            env: int
+            event: pre-deployment
+            commit: a1b2c3d
+            prev: '{"us-east-1":{"sha":"a1b2c3d"}}'
+            expect_has: "Dashboard"
+            expect_not: "Compare changes|Release notes|Monitor"
+          - name: int first deploy no previous
+            env: int
+            event: pre-deployment
+            commit: e4f5a6b
+            prev: ''
+            expect_has: "Dashboard"
+            expect_not: "Compare changes|Release notes|Monitor"
+          - name: int rollback
+            env: int
+            event: post-deployment
+            alert: success
+            op: rollback
+            commit: e4f5a6b
+            prev: '{"us-east-1":{"sha":"a1b2c3d"}}'
+            expect_has: "Dashboard"
+            expect_not: "Compare changes|Release notes|Monitor"
+          - name: int app-deployed false
+            env: int
+            event: pre-deployment
+            app: 'false'
+            commit: e4f5a6b
+            prev: '{"us-east-1":{"sha":"a1b2c3d"}}'
+            expect_has: "Dashboard"
+            expect_not: "Compare changes|Release notes|Monitor"
+          - name: int caller omits new inputs
+            env: int
+            event: pre-deployment
+            commit: ''
+            prev: ''
+            expect_has: "Dashboard"
+            expect_not: "Compare changes|Release notes|Monitor"
+          - name: prod pre deploy
+            env: prod
+            event: pre-deployment
+            commit: e4f5a6b
+            prev: '{"us-east-1":{"sha":"a1b2c3d"}}'
+            expect_has: "[Release notes]("
+            expect_not: "Compare changes"
+          - name: prod post success
+            env: prod
+            event: post-deployment
+            alert: success
+            commit: e4f5a6b
+            prev: '{"us-east-1":{"sha":"a1b2c3d"}}'
+            expect_has: "Monitor"
+            expect_not: "Compare changes"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build links (${{ matrix.name }})
+        id: act
+        uses: ./.github/actions/send-datadog-deployment-event
+        with:
+          event-type: ${{ matrix.event }}
+          service: account-service
+          environment: ${{ matrix.env }}
+          regions: ${{ matrix.regions || '["us-east-1"]' }}
+          version: 1.2.3
+          tag-prefix: account-service-
+          deployer: octocat
+          dashboard-url: https://app.datadoghq.com/dashboard/example
+          alert-type: ${{ matrix.alert || 'info' }}
+          operation-type: ${{ matrix.op || 'deploy' }}
+          app-deployed: ${{ matrix.app || 'true' }}
+          commit-sha: ${{ matrix.commit }}
+          previous-region-info: ${{ matrix.prev }}
+          datadog-api-key: unused-poc
+      - name: Assert
+        env:
+          LINKS: ${{ steps.act.outputs.links }}
+          HAS: ${{ matrix.expect_has }}
+          NOT: ${{ matrix.expect_not }}
+        run: |
+          echo "LINKS: $LINKS"
+          grep -qF -- "$HAS" <<< "$LINKS" || { echo "::error::expected to contain: $HAS"; exit 1; }
+          if grep -qE -- "$NOT" <<< "$LINKS"; then echo "::error::must not contain: $NOT"; exit 1; fi
