@@ -120,3 +120,38 @@ jobs:
           echo "LINKS: $LINKS"
           grep -qF -- "$HAS" <<< "$LINKS" || { echo "::error::expected to contain: $HAS"; exit 1; }
           if grep -qE -- "$NOT" <<< "$LINKS"; then echo "::error::must not contain: $NOT"; exit 1; fi
+
+  real-link:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Resolve two real commits
+        id: shas
+        run: |
+          echo "new=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "old=$(git rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+      - name: Build links
+        id: act
+        uses: ./.github/actions/send-datadog-deployment-event
+        with:
+          event-type: pre-deployment
+          service: account-service
+          environment: int
+          regions: '["us-east-1"]'
+          version: 1.2.3
+          deployer: octocat
+          commit-sha: ${{ steps.shas.outputs.new }}
+          previous-region-info: '{"us-east-1":{"sha":"${{ steps.shas.outputs.old }}"}}'
+          datadog-api-key: unused-poc
+      - name: Compare link resolves (HTTP 200)
+        env:
+          LINKS: ${{ steps.act.outputs.links }}
+        run: |
+          echo "LINKS: $LINKS"
+          url=$(grep -oE 'https://github.com/[^)]+/compare/[^)]+' <<< "$LINKS" | head -1)
+          [ -n "$url" ] || { echo "::error::no compare link generated"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+          echo "$url -> $code"
+          [ "$code" = "200" ] || { echo "::error::compare link returned $code"; exit 1; }
