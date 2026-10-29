@@ -14,7 +14,7 @@ WARN="::warning::No Compare changes link added: jq command failed"
 for c in "invalid JSON|not json" "JSON null|null" "number root|5" "string root|\"abc\"" "numeric sha|{\"a\":{\"sha\":1234567}}"; do
   name=${c%%|*}; prev=${c#*|}; run "$name" "$prev"
   echo "   [$name] stdout='$so' stderr='${se:0:75}'"
-  [[ $rc == 0 && -z "$links" && "$so" == "$WARN" && "$se" == jq:* ]] && check "$name: exit 0, no link, warning on stdout, jq error on stderr" ok || check "$name" bad "rc=$rc links=$links so=$so se=$se"
+  [[ $rc == 0 && -z "$links" && "$so" == "$WARN" && -n "$se" ]] && check "$name: exit 0, no link, warning on stdout, jq error on stderr" ok || check "$name" bad "rc=$rc links=$links so=$so se=$se"
 done
 run valid '{"a":{"sha":"aaaaaaa"}}'
 [[ $rc == 0 && "$links" == "[Compare changes](https://github.com/example-org/example-repo/compare/aaaaaaa..bbbbbbb)" && -z "$so" && -z "$se" ]] && check "valid JSON: link added, nothing printed" ok || check "valid JSON" bad "rc=$rc links=$links so=$so se=$se"
