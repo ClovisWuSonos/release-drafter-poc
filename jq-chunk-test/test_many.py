@@ -100,8 +100,8 @@ big = {f"region-{i}": {"sha": ("%07x" % (i % 7 + 1))} for i in range(500)}
 rc, links, so, se = run(json.dumps(big)); check("E size", "500 regions, 7 distinct shas", rc == 0 and links == want(big), (rc, len(links)))
 same = {f"region-{i}": {"sha": "aaaaaaa"} for i in range(2000)}
 rc, links, so, se = run(json.dumps(same)); check("E size", "2000 regions same sha -> 1 link", rc == 0 and links == want(same), (rc, len(links)))
-pad = {"a": {"sha": "aaaaaaa", "blob": "x" * 500000}}
-rc, links, so, se = run(json.dumps(pad)); check("E size", "500 KB extra field", rc == 0 and links == want(pad), (rc, len(links)))
+pad = {"a": {"sha": "aaaaaaa", "blob": "x" * 100000}}
+rc, links, so, se = run(json.dumps(pad)); check("E size", "100 KB extra field (Linux caps one env var at 128 KB)", rc == 0 and links == want(pad), (rc, len(links)))
 deep = '{"a":{"sha":"aaaaaaa","n":' + "[" * 300 + "]" * 300 + "}}"
 rc, links, so, se = run(deep); check("E size", "deeply nested extra field", rc == 0 and links == [f"[Compare changes]({BASE}/aaaaaaa..bbbbbbb)"], (rc, links, so, se[:60]))
 
