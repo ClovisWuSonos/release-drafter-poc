@@ -102,8 +102,17 @@ same = {f"region-{i}": {"sha": "aaaaaaa"} for i in range(2000)}
 rc, links, so, se = run(json.dumps(same)); check("E size", "2000 regions same sha -> 1 link", rc == 0 and links == want(same), (rc, len(links)))
 pad = {"a": {"sha": "aaaaaaa", "blob": "x" * 100000}}
 rc, links, so, se = run(json.dumps(pad)); check("E size", "100 KB extra field (Linux caps one env var at 128 KB)", rc == 0 and links == want(pad), (rc, len(links)))
-deep = '{"a":{"sha":"aaaaaaa","n":' + "[" * 300 + "]" * 300 + "}}"
-rc, links, so, se = run(deep); check("E size", "deeply nested extra field", rc == 0 and links == [f"[Compare changes]({BASE}/aaaaaaa..bbbbbbb)"], (rc, links, so, se[:60]))
+deep = '{"a":{"sha":"aaaaaaa","n":' + "[" * 100 + "]" * 100 + "}}"
+rc, links, so, se = run(deep); check("E size", "100-level nested extra field", rc == 0 and links == [f"[Compare changes]({BASE}/aaaaaaa..bbbbbbb)"], (rc, links, so, se[:60]))
+# older jq (1.6/1.7) refuses very deep JSON ("Exceeds depth limit"); either a link (new jq) or a soft failure is fine
+deeper = '{"a":{"sha":"aaaaaaa","n":' + "[" * 1000 + "]" * 1000 + "}}"
+rc, links, so, se = run(deeper)
+check("E size", "1000-level nesting: link or soft failure, never a crash", rc == 0 and (links == [f"[Compare changes]({BASE}/aaaaaaa..bbbbbbb)"] or (not links and so.strip() == WARN)), (rc, links, so, se[:60]))
+
+# ---- E2. does jq itself accept empty / whitespace input quietly? (why the [[ -n ... ]] guard is optional)
+for name, text in [("empty", ""), ("space", " "), ("newline", "\n"), ("here-string empty", "")]:
+    p = subprocess.run(["jq", "-r", "to_entries[]"], input=text if name != "here-string empty" else "\n", capture_output=True, text=True)
+    check("E2 jq on empty input is quiet", name, p.returncode == 0 and p.stdout == "" and p.stderr == "", (p.returncode, p.stdout, p.stderr))
 
 # ---- F. jq not installed
 nojq = tempfile.mkdtemp()
