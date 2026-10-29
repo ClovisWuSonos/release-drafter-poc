@@ -1,0 +1,39 @@
+name: jq-chunk-test
+
+# Tries one jq code chunk on real GitHub-hosted runners. Nothing else is involved.
+on:
+  push:
+    branches: [jq-chunk-test]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versions
+        run: |
+          bash --version | head -1
+          jq --version
+
+      # The question: is jq's own error visible in the Actions log, followed by our warning annotation?
+      - name: Demo - jq fails on invalid JSON (expect a jq error line, then a warning annotation; step stays green)
+        working-directory: jq-chunk-test
+        env:
+          INPUT_PREVIOUS_REGION_INFO: not json
+          INPUT_COMMIT_SHA: bbbbbbb
+          LINKS_FILE: ${{ runner.temp }}/links.txt
+        run: bash ./chunk.sh
+
+      - name: Tests
+        run: ./jq-chunk-test/test.sh
