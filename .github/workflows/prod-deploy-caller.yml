@@ -1,0 +1,9 @@
+name: prod-deploy-caller
+on:
+  push:
+    branches: [test/SWPBL-273052-concurrency]
+jobs:
+  call:
+    uses: ./.github/workflows/prod-deploy-reusable.yml
+    with:
+      service: poc-svc

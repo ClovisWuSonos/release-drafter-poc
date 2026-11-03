@@ -1,0 +1,9 @@
+name: rollback-caller
+on:
+  push:
+    branches: [test/SWPBL-273052-concurrency]
+jobs:
+  call:
+    uses: ./.github/workflows/rollback-reusable.yml
+    with:
+      service: poc-svc

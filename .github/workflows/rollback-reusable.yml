@@ -1,0 +1,15 @@
+name: rollback-reusable
+on:
+  workflow_call:
+    inputs:
+      service: { type: string, required: true }
+# same shape as the real change: identical group string in both reusable workflows
+concurrency:
+  group: argo-prod-deploy-${{ github.repository }}-${{ inputs.service }}
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "ROLLBACK START $(date -u +%T)"; sleep 30; echo "ROLLBACK END $(date -u +%T)"
