@@ -4,7 +4,7 @@ on:
     inputs:
       service: { type: string, required: true }
 concurrency:
-  group: argo-prod-deploy-${{ github.repository }}-${{ inputs.service }}
+  group: ${{ inputs.environment == 'prod' && format('argo-prod-deploy-{0}-{1}', github.repository, inputs.service) || format('argo-rollback-{0}', github.run_id) }}
   cancel-in-progress: false
 jobs:
   deploy:

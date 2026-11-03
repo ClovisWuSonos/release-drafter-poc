@@ -3,6 +3,13 @@ on:
   push:
     branches: [test/SWPBL-273052-rollback-harness]
   workflow_dispatch:
+permissions:
+  actions: read
+  checks: write
+  contents: write
+  id-token: write
+  packages: read
+  pull-requests: write
 jobs:
   s-prod-normal:
     uses: ./.github/workflows/rollback-harness.yml

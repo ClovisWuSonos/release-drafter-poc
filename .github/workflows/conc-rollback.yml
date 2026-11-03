@@ -2,6 +2,13 @@ name: conc-rollback
 on:
   push:
     branches: [test/SWPBL-273052-rollback-harness]
+permissions:
+  actions: read
+  checks: write
+  contents: write
+  id-token: write
+  packages: read
+  pull-requests: write
 jobs:
   rollback:
     uses: ./.github/workflows/rollback-harness.yml

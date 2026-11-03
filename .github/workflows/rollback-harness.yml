@@ -65,7 +65,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: argo-prod-deploy-${{ github.repository }}-${{ inputs.service }}
+  group: ${{ inputs.environment == 'prod' && format('argo-prod-deploy-{0}-{1}', github.repository, inputs.service) || format('argo-rollback-{0}', github.run_id) }}
   cancel-in-progress: false
 jobs:
   validate-region:
@@ -184,4 +184,4 @@ jobs:
       results: ${{ steps.r.outputs.v }}
     steps:
       - id: r
-        run: echo "v=validate-region=${{ needs.validate-region.result }} get-argo-service-name=${{ needs.get-argo-service-name.result }} get-current=${{ needs.get-current.result }} resolve-previous=${{ needs.resolve-previous.result }} rollback-deploy=${{ needs.rollback-deploy.result }} sync-github-releases=${{ needs.sync-github-releases.result }} tags=[${{ needs.sync-github-releases.outputs.tags }}]" >> "$GITHUB_OUTPUT"
+        run: echo 'v=validate-region=${{ needs.validate-region.result }} get-argo-service-name=${{ needs.get-argo-service-name.result }} get-current=${{ needs.get-current.result }} resolve-previous=${{ needs.resolve-previous.result }} rollback-deploy=${{ needs.rollback-deploy.result }} sync-github-releases=${{ needs.sync-github-releases.result }} tags=[${{ needs.sync-github-releases.outputs.tags }}]' >> "$GITHUB_OUTPUT"
