@@ -2,11 +2,19 @@ name: stub-env
 on:
   workflow_call:
     inputs:
-      version: { type: string, required: false, default: '' }
-      sha:     { type: string, required: false, default: '' }
+      version:
+        type: string
+        required: false
+        default: ''
+      sha:
+        type: string
+        required: false
+        default: ''
     outputs:
-      version: { value: ${{ jobs.s.outputs.version }} }
-      sha:     { value: ${{ jobs.s.outputs.sha }} }
+      version:
+        value: ${{ jobs.s.outputs.version }}
+      sha:
+        value: ${{ jobs.s.outputs.sha }}
 jobs:
   s:
     runs-on: ubuntu-latest

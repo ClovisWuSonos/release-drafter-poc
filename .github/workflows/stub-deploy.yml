@@ -2,9 +2,12 @@ name: stub-deploy
 on:
   workflow_call:
     inputs:
-      final-state: { type: string, required: true }
+      final-state:
+        type: string
+        required: true
     outputs:
-      final-state: { value: ${{ jobs.s.outputs.final-state }} }
+      final-state:
+        value: ${{ jobs.s.outputs.final-state }}
 jobs:
   s:
     runs-on: ubuntu-latest

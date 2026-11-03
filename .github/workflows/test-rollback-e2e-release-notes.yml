@@ -1,0 +1,59 @@
+name: test-rollback-e2e-release-notes (SWPBL-273052 POC)
+on:
+  push:
+    branches: [test/SWPBL-273052-rollback-harness]
+permissions:
+  contents: write
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Seed two published test releases (only rb-e2e-* tags, recreated each run)
+        run: |
+          for v in 1.0.4 1.0.5; do gh release delete "rb-e2e-$v" --cleanup-tag --yes 2>/dev/null || true; done
+          gh release create rb-e2e-1.0.4 --target "$GITHUB_SHA" --title "rb-e2e-1.0.4" --notes "Release notes for 1.0.4 (the rollback target)" --latest=false
+          gh release create rb-e2e-1.0.5 --target "$GITHUB_SHA" --title "rb-e2e-1.0.5" --notes "Release notes for 1.0.5 (the bad release, currently Latest)" --latest
+          echo "Latest before: $(gh release view --json tagName -q .tagName)"
+  rollback:
+    needs: seed
+    uses: ./.github/workflows/rollback-harness.yml
+    permissions:
+      contents: write
+      actions: read
+      checks: write
+      id-token: write
+      packages: read
+      pull-requests: write
+    with:
+      service: poc-e2e
+      environment: prod
+      region: us-east-1
+      team: poc
+      tag-prefix: rb-e2e-
+      stub-current-version: '1.0.5'
+      stub-previous-version: '1.0.4'
+      stub-final-state: success
+      real-release-sync: true
+  verify:
+    needs: rollback
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert release notes and Latest
+        run: |
+          latest=$(gh release view --json tagName -q .tagName)
+          echo "Latest after: $latest"
+          echo "---- rb-e2e-1.0.5 (superseded) body ----"; gh release view rb-e2e-1.0.5 --json body -q .body
+          echo "---- rb-e2e-1.0.4 (target) body ----";     gh release view rb-e2e-1.0.4 --json body -q .body
+          body5=$(gh release view rb-e2e-1.0.5 --json body -q .body)
+          fail=0
+          [ "$latest" = "rb-e2e-1.0.4" ] || { echo "FAIL: Latest is $latest, wanted rb-e2e-1.0.4"; fail=1; }
+          echo "$body5" | grep -qF "us-east-1: ⏪ rolled-back on" || { echo "FAIL: no rolled-back row for us-east-1"; fail=1; }
+          echo "$body5" | grep -qF "production reverted to rb-e2e-1.0.4" || { echo "FAIL: no revert target in row"; fail=1; }
+          [ "$(gh release view rb-e2e-1.0.4 --json isDraft -q .isDraft)" = "false" ] || { echo "FAIL: target not published"; fail=1; }
+          exit $fail

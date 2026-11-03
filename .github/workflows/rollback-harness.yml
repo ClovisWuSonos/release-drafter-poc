@@ -55,6 +55,10 @@ on:
         type: string
         required: false
         default: ""
+      real-release-sync:
+        type: boolean
+        required: false
+        default: false
     outputs:
       results:
         value: ${{ jobs.report.outputs.results }}
@@ -143,9 +147,27 @@ jobs:
     continue-on-error: true
     timeout-minutes: 3
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tags: ${{ steps.t.outputs.v }}
     steps:
+      - uses: actions/checkout@v4
+        if: ${{ inputs.real-release-sync }}
+      - name: Mark target release as latest (REAL action code)
+        if: ${{ inputs.real-release-sync }}
+        uses: ./.github/actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: ${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }}
+      - name: Annotate superseded release (REAL action code)
+        if: ${{ inputs.real-release-sync }}
+        uses: ./.github/actions/update-region-rollout-status
+        with:
+          tag: ${{ inputs.tag-prefix }}${{ needs.get-current.outputs.version }}
+          regions-status: '[{"region":"${{ inputs.region }}","status":"rolled-back"}]'
+          reverted-to-tag: ${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }}
+          github-token: ${{ github.token }}
       - id: t
         run: echo 'v=promote:${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }} annotate:${{ inputs.tag-prefix }}${{ needs.get-current.outputs.version }} revert-to:${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }} regions:[{"region":"${{ inputs.region }}","status":"rolled-back"}]' >> "$GITHUB_OUTPUT"
   report:
