@@ -1,0 +1,42 @@
+name: test-compare-link (SWPBL-274398 POC)
+on:
+  push:
+    branches: [test/SWPBL-274398-compare-link]
+  workflow_dispatch:
+
+jobs:
+  scenario:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: prod-pre,            env: prod,  event: pre-deployment,  alert: info,    sha: 1111111aaaaaaa, prev: '{"us-east-1":{"sha":"2222222bbbbbbb"}}', expect: 'Release notes', forbid: 'Compare' }
+          - { name: prod-pre-monitor,    env: prod,  event: pre-deployment,  alert: info,    sha: 1111111aaaaaaa, prev: '',                                        expect: 'Monitor',       forbid: 'Compare' }
+          - { name: stage-same-prev,     env: stage, event: pre-deployment,  alert: info,    sha: 1111111aaaaaaa, prev: '{"us-east-1":{"sha":"2222222bbbbbbb"},"eu-west-1":{"sha":"2222222bbbbbbb"}}', expect: '[Compare changes](https://github.com/ClovisWuSonos/release-drafter-poc/compare/2222222bbbbbbb..1111111aaaaaaa)', forbid: 'Release notes' }
+          - { name: stage-diff-prev,     env: stage, event: pre-deployment,  alert: info,    sha: 1111111aaaaaaa, prev: '{"us-east-1":{"sha":"2222222bbbbbbb"},"eu-west-1":{"sha":"3333333ccccccc"}}', expect: '[Compare (eu-west-1)]', forbid: 'Monitor' }
+          - { name: int-post-success,    env: int,   event: post-deployment, alert: success, sha: 1111111aaaaaaa, prev: '{"us-east-1":{"sha":"2222222bbbbbbb"}}', expect: '[Compare changes]', forbid: 'Monitor' }
+          - { name: int-no-prev-info,    env: int,   event: pre-deployment,  alert: info,    sha: 1111111aaaaaaa, prev: '',                                        expect: '',               forbid: 'Links:' }
+          - { name: int-bad-sha,         env: int,   event: pre-deployment,  alert: info,    sha: 'zzz',          prev: '{"us-east-1":{"sha":"2222222bbbbbbb"}}', expect: '',               forbid: 'Compare' }
+          - { name: int-v4-caller-nosha, env: int,   event: pre-deployment,  alert: info,    sha: '',             prev: '',                                        expect: '',               forbid: 'Release notes' }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Send event (patched copy, no Datadog call)
+        uses: ./.github/actions/send-datadog-deployment-event
+        with:
+          event-type: ${{ matrix.event }}
+          alert-type: ${{ matrix.alert }}
+          service: poc-svc
+          environment: ${{ matrix.env }}
+          regions: '["us-east-1","eu-west-1"]'
+          version: 1.2.3
+          tag-prefix: ''
+          deployer: ${{ github.actor }}
+          datadog-api-key: dummy
+          commit-sha: ${{ matrix.sha }}
+          previous-region-info: ${{ matrix.prev }}
+      - name: Assert
+        run: |
+          cat "$RUNNER_TEMP/event.txt"
+          if [ -n '${{ matrix.expect }}' ]; then grep -qF -- '${{ matrix.expect }}' "$RUNNER_TEMP/event.txt" || { echo "::error::missing expected: ${{ matrix.expect }}"; exit 1; }; fi
+          if grep -qF -- '${{ matrix.forbid }}' "$RUNNER_TEMP/event.txt"; then echo "::error::found forbidden: ${{ matrix.forbid }}"; exit 1; fi
