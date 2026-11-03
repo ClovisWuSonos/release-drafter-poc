@@ -1,0 +1,67 @@
+name: test-argo-wiring (SWPBL-274398 POC)
+on:
+  push:
+    branches: [test/SWPBL-274398-compare-link]
+  workflow_dispatch:
+
+jobs:
+  stage-argo-two-regions:
+    uses: ./.github/workflows/argo-wiring-scenario.yml
+    with:
+      environment: stage
+      run-argo: 'true'
+      sha: ''
+      deploy-sha: 'aaaaaaa1111111'
+      region-info: '{"us-east-1":{"sha":"bbbbbbb2222222","version":"1"},"eu-west-1":{"sha":"bbbbbbb2222222","version":"1"}}'
+      pre-expect: 'compare/bbbbbbb2222222..'
+      post-expect: 'compare/bbbbbbb2222222..aaaaaaa1111111'
+  int-input-sha:
+    uses: ./.github/workflows/argo-wiring-scenario.yml
+    with:
+      environment: int
+      run-argo: 'true'
+      sha: 'ccccccc3333333'
+      deploy-sha: 'ccccccc3333333'
+      region-info: '{"us-east-1":{"sha":"bbbbbbb2222222","version":"1"}}'
+      pre-expect: 'compare/bbbbbbb2222222..ccccccc3333333'
+      post-expect: 'compare/bbbbbbb2222222..ccccccc3333333'
+  deploy-sha-missing-falls-back-to-input:
+    uses: ./.github/workflows/argo-wiring-scenario.yml
+    with:
+      environment: int
+      run-argo: 'true'
+      sha: 'ccccccc3333333'
+      deploy-sha: ''
+      region-info: '{"us-east-1":{"sha":"bbbbbbb2222222","version":"1"}}'
+      pre-expect: 'compare/bbbbbbb2222222..ccccccc3333333'
+      post-expect: 'compare/bbbbbbb2222222..ccccccc3333333'
+  input-sha-empty-uses-github-sha:
+    uses: ./.github/workflows/argo-wiring-scenario.yml
+    with:
+      environment: int
+      run-argo: 'true'
+      sha: ''
+      deploy-sha: ''
+      region-info: '{"us-east-1":{"sha":"bbbbbbb2222222","version":"1"}}'
+      pre-expect: 'compare/bbbbbbb2222222..'
+      post-expect: 'compare/bbbbbbb2222222..'
+  infra-only-no-argo:
+    uses: ./.github/workflows/argo-wiring-scenario.yml
+    with:
+      environment: stage
+      run-argo: 'false'
+      sha: ''
+      deploy-sha: 'aaaaaaa1111111'
+      region-info: '{"us-east-1":{"sha":"bbbbbbb2222222","version":"1"}}'
+      pre-expect: ''
+      post-expect: ''
+  empty-region-info:
+    uses: ./.github/workflows/argo-wiring-scenario.yml
+    with:
+      environment: int
+      run-argo: 'true'
+      sha: ''
+      deploy-sha: 'aaaaaaa1111111'
+      region-info: ''
+      pre-expect: ''
+      post-expect: ''

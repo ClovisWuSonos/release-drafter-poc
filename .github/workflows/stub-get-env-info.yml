@@ -1,0 +1,17 @@
+name: stub-get-env-info
+on:
+  workflow_call:
+    inputs:
+      region-info: { type: string, required: false, default: '' }
+    outputs:
+      region-info:
+        value: ${{ jobs.get-env-info.outputs.region-info }}
+jobs:
+  get-env-info:
+    runs-on: ubuntu-latest
+    outputs:
+      region-info: ${{ steps.r.outputs.value }}
+    steps:
+      - id: r
+        env: { RI: '${{ inputs.region-info }}' }
+        run: echo "value=$RI" >> "$GITHUB_OUTPUT"

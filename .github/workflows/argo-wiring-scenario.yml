@@ -1,0 +1,86 @@
+name: argo-wiring-scenario
+on:
+  workflow_call:
+    inputs:
+      environment: { type: string, required: true }
+      run-argo:    { type: string, required: true }
+      sha:         { type: string, required: false, default: '' }
+      deploy-sha:  { type: string, required: false, default: '' }
+      region-info: { type: string, required: false, default: '' }
+      pre-expect:  { type: string, required: false, default: '' }
+      post-expect: { type: string, required: false, default: '' }
+
+jobs:
+  get-env-info:
+    uses: ./.github/workflows/stub-get-env-info.yml
+    with:
+      region-info: ${{ inputs.region-info }}
+
+  resolve-scope:
+    runs-on: ubuntu-latest
+    outputs:
+      run-argo: ${{ steps.o.outputs.v }}
+    steps:
+      - id: o
+        run: echo "v=${{ inputs.run-argo }}" >> "$GITHUB_OUTPUT"
+
+  notify-pre-deploy:
+    needs: [ get-env-info, resolve-scope ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/send-datadog-deployment-event
+        with:
+          event-type: pre-deployment
+          service: poc-svc
+          environment: ${{ inputs.environment }}
+          regions: '["us-east-1"]'
+          version: 1.2.3
+          tag-prefix: ''
+          app-deployed: ${{ needs.resolve-scope.outputs.run-argo }}
+          # --- expressions copied verbatim from argo-deploy-test-java/workflow.yml ---
+          commit-sha: ${{ inputs.sha || github.sha }}
+          previous-region-info: ${{ needs.resolve-scope.outputs.run-argo == 'true' && needs.get-env-info.outputs.region-info || '' }}
+          deployer: ${{ github.actor }}
+          datadog-api-key: dummy
+      - name: Assert pre
+        env: { EXPECT: '${{ inputs.pre-expect }}' }
+        run: |
+          cat "$RUNNER_TEMP/event.txt"
+          if [ -n "$EXPECT" ]; then grep -qF -- "$EXPECT" "$RUNNER_TEMP/event.txt" || { echo "::error::missing: $EXPECT"; exit 1; }
+          else ! grep -qF "Compare" "$RUNNER_TEMP/event.txt" || { echo "::error::unexpected Compare link"; exit 1; }; fi
+
+  deploy:
+    needs: [ notify-pre-deploy, resolve-scope ]
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.s.outputs.sha }}
+    steps:
+      - id: s
+        run: echo "sha=${{ inputs.deploy-sha }}" >> "$GITHUB_OUTPUT"
+
+  deploy-report:
+    needs: [ get-env-info, deploy, resolve-scope ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/send-datadog-deployment-event
+        with:
+          event-type: post-deployment
+          alert-type: success
+          service: poc-svc
+          environment: ${{ inputs.environment }}
+          regions: '["us-east-1"]'
+          version: 1.2.3
+          tag-prefix: ''
+          app-deployed: ${{ needs.resolve-scope.outputs.run-argo }}
+          commit-sha: ${{ needs.deploy.outputs.sha || inputs.sha || github.sha }}
+          previous-region-info: ${{ needs.resolve-scope.outputs.run-argo == 'true' && needs.get-env-info.outputs.region-info || '' }}
+          deployer: ${{ github.actor }}
+          datadog-api-key: dummy
+      - name: Assert post
+        env: { EXPECT: '${{ inputs.post-expect }}' }
+        run: |
+          cat "$RUNNER_TEMP/event.txt"
+          if [ -n "$EXPECT" ]; then grep -qF -- "$EXPECT" "$RUNNER_TEMP/event.txt" || { echo "::error::missing: $EXPECT"; exit 1; }
+          else ! grep -qF "Compare" "$RUNNER_TEMP/event.txt" || { echo "::error::unexpected Compare link"; exit 1; }; fi
