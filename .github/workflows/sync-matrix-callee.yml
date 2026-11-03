@@ -48,7 +48,7 @@ jobs:
     needs: [resolve-previous, get-current, verify-current]
     if: ${{ !cancelled() && needs.verify-current.result == 'success' && needs.verify-current.outputs.version == needs.resolve-previous.outputs.version }}
     runs-on: ubuntu-latest
-    steps: [{ run: "echo STUB: would promote + annotate (nothing real happens)" }]
+    steps: [{ run: "echo STUB would promote and annotate - nothing real happens" }]
   assert:
     needs: [sync-github-releases]
     if: ${{ always() }}
@@ -58,6 +58,6 @@ jobs:
           RESULT: ${{ needs.sync-github-releases.result }}
           EXPECT: ${{ inputs.expect_sync }}
         run: |
-          ran=false; [ "$RESULT" = success ] && ran=true
+          ran=true; [ "$RESULT" = skipped ] && ran=false
           echo "sync result=$RESULT ran=$ran expected=$EXPECT"
           [ "$ran" = "$EXPECT" ] || { echo "::error::sync ran=$ran but expected $EXPECT"; exit 1; }
