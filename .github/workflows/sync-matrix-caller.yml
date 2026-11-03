@@ -1,0 +1,29 @@
+name: sync-matrix (POC)
+on:
+  push:
+    branches: [test-send-datadog-v5-no-publish]
+    paths: [.github/workflows/sync-matrix-*.yml]
+permissions: { contents: read }
+jobs:
+  scenario:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: prod-changed-version-SYNC,   env: prod, argo: authz,        prev: 1.0.0, cur: 1.1.0, deploy: success, verify: 1.0.0, expect: 'true' }
+          - { name: same-version-skip,           env: prod, argo: authz,        prev: 1.1.0, cur: 1.1.0, deploy: success, verify: 1.1.0, expect: 'false' }
+          - { name: canary-skip,                 env: prod, argo: authz-canary, prev: 1.0.0, cur: 1.1.0, deploy: success, verify: 1.0.0, expect: 'false' }
+          - { name: non-prod-skip,               env: int,  argo: authz,        prev: 1.0.0, cur: 1.1.0, deploy: success, verify: 1.0.0, expect: 'false' }
+          - { name: deploy-final-state-failure,  env: prod, argo: authz,        prev: 1.0.0, cur: 1.1.0, deploy: failure, verify: 1.0.0, expect: 'false' }
+          - { name: rollback-job-crash,          env: prod, argo: authz,        prev: 1.0.0, cur: 1.1.0, deploy: crash,   verify: 1.0.0, expect: 'false' }
+          - { name: verify-sees-other-version,   env: prod, argo: authz,        prev: 1.0.0, cur: 1.1.0, deploy: success, verify: 1.2.0, expect: 'false' }
+    name: ${{ matrix.name }}
+    uses: ./.github/workflows/sync-matrix-callee.yml
+    with:
+      environment: ${{ matrix.env }}
+      argo_name: ${{ matrix.argo }}
+      prev_version: ${{ matrix.prev }}
+      cur_version: ${{ matrix.cur }}
+      deploy_state: ${{ matrix.deploy }}
+      verify_version: ${{ matrix.verify }}
+      expect_sync: ${{ matrix.expect }}
