@@ -1,0 +1,16 @@
+# POC ONLY: runs the verbatim validate-region / get-argo-service-name shell steps against accept/reject cases.
+# Pure bash on a runner: no secrets, no network, no services.
+name: test-validation (POC)
+on:
+  push:
+    branches: [test-send-datadog-v5-no-publish]
+    paths: [.github/workflows/test-validation.yml, .github/validation-test/**]
+permissions:
+  contents: read
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash .github/validation-test/run-validation-tests.sh
