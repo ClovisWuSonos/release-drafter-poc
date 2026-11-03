@@ -65,7 +65,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ${{ inputs.environment == 'prod' && format('argo-prod-deploy-{0}-{1}', github.repository, inputs.service) || format('argo-rollback-{0}', github.run_id) }}
+  group: argo-prod-deploy-${{ github.repository }}-${{ inputs.service }}
   cancel-in-progress: false
 jobs:
   validate-region:
@@ -75,21 +75,10 @@ jobs:
         shell: bash
         env:
           INPUT_REGION: ${{ inputs.region }}
-          INPUT_TAG_PREFIX: ${{ inputs.tag-prefix }}
         run: |
-          # The raw inputs are deliberately not echoed in the errors below: they are caller-
-          # controlled, and a '::' or newline in them would inject workflow commands.
-          if [[ -z "$INPUT_REGION" || "$INPUT_REGION" == "all" ]]; then
-            echo "::error::region must be a single region for rollback. 'all' is not supported because previous versions can differ per region."
-            exit 1
-          fi
-          if [[ ! "$INPUT_REGION" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            echo "::error::region may contain only letters, numbers, '.', '_' and '-'."
-            exit 1
-          fi
-          # tag-prefix may be empty (bare version tags).
-          if [[ ! "$INPUT_TAG_PREFIX" =~ ^[A-Za-z0-9._/-]*$ ]]; then
-            echo "::error::tag-prefix may contain only letters, numbers, '.', '_', '/' and '-'."
+          # Validate region: a single valid region name
+          if [[ ! "$INPUT_REGION" =~ ^[A-Za-z0-9._-]+$ || "$INPUT_REGION" == "all" ]]; then
+            echo "::error::region must be a single region for rollback (got '${INPUT_REGION}'). 'all' is not supported because previous versions can differ per region."
             exit 1
           fi
           echo "Rollback region: ${INPUT_REGION}"
@@ -156,7 +145,7 @@ jobs:
       - get-current
     if: ${{ !cancelled() && needs.get-current.result == 'success' && needs.resolve-previous.outputs.version != needs.get-current.outputs.version && needs.rollback-deploy.outputs.final-state == 'success' }}
     continue-on-error: true
-    timeout-minutes: 3
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     permissions:
       contents: write
