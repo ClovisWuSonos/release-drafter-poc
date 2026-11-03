@@ -58,4 +58,5 @@ jobs:
 
       - name: Cleanup throwaway releases and tags
         if: always()
-        run: gh release delete "$PREV" "$CUR" --cleanup-tag -y || true
+        run: |
+          for t in "$PREV" "$CUR"; do gh release delete "$t" --cleanup-tag -y || true; done
