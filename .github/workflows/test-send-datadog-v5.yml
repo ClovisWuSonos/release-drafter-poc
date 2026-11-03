@@ -1,0 +1,84 @@
+# POC ONLY: exercise send-datadog-deployment-event (v5 code) WITHOUT sending anything.
+#
+# No-publish guarantees (layered):
+#   1. workflow_dispatch only: never runs on push / PR / schedule.
+#   2. No `secrets.*` anywhere: the API key is a dummy literal, so even if
+#      the request reached Datadog it would be rejected (403) and create no event.
+#   3. datadog-api-url points at a `.invalid` host (RFC 2606: guaranteed to never
+#      resolve), so the request cannot leave the runner.
+#   4. continue-on-error: "true" so the expected send failure doesn't fail the job.
+#   5. Last step asserts the send FAILED, i.e. proves nothing was published.
+#
+# The action is pinned to the #1912 squash-merge commit because the
+# send-datadog-deployment-event-v5 tag doesn't exist until the Changeset Release PR merges.
+name: test-send-datadog-v5 (no publish)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: int-pre-single-region,   event: pre-deployment,  alert: info,    env: int,   regions: us-east-1,           prev: single }
+          - { name: int-post-success,        event: post-deployment, alert: success, env: int,   regions: us-east-1,           prev: single }
+          - { name: stage-pre-multi-region,  event: pre-deployment,  alert: info,    env: stage, regions: "us-east-1,eu-west-1", prev: multi }
+          - { name: test-post-failed,        event: post-deployment, alert: error,   env: test,  regions: us-east-1,           prev: single }
+          - { name: int-first-deploy-no-prev, event: pre-deployment, alert: info,    env: int,   regions: us-east-1,           prev: none }
+          - { name: int-bad-previous-json,   event: pre-deployment,  alert: info,    env: int,   regions: us-east-1,           prev: invalid }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 3
+
+      - name: Build sample previous-region-info
+        id: prev
+        env:
+          KIND: ${{ matrix.prev }}
+        run: |
+          new="$(git rev-parse HEAD)"
+          old="$(git rev-parse HEAD~1)"
+          case "$KIND" in
+            single)  json="{\"us-east-1\":{\"sha\":\"$old\",\"version\":\"1.0.0\"}}" ;;
+            multi)   json="{\"us-east-1\":{\"sha\":\"$old\",\"version\":\"1.0.0\"},\"eu-west-1\":{\"sha\":\"$(git rev-parse HEAD~2)\",\"version\":\"1.0.0\"}}" ;;
+            none)    json="" ;;
+            invalid) json="not-json" ;;
+          esac
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "json=$json" >> "$GITHUB_OUTPUT"
+
+      - name: Run action (v5 code, send blocked)
+        id: notify
+        uses: sonos-inc/platform-core/actions/send-datadog-deployment-event@d5936f2ce55fd8e1b8bc291bb6c6d9ea07f64ea7
+        with:
+          event-type: ${{ matrix.event }}
+          alert-type: ${{ matrix.alert }}
+          service: poc-service
+          environment: ${{ matrix.env }}
+          regions: ${{ matrix.regions }}
+          version: 1.0.1
+          tag-prefix: v
+          commit-sha: ${{ steps.prev.outputs.new }}
+          previous-region-info: ${{ steps.prev.outputs.json }}
+          deployer: ${{ github.actor }}
+          datadog-api-key: dummy-not-a-real-key
+          datadog-api-url: https://datadog-blocked.invalid
+          continue-on-error: "true"
+
+      - name: Assert nothing was published
+        env:
+          RESULT: ${{ steps.notify.outputs.result }}
+        run: |
+          echo "send-event outcome: $RESULT"
+          if [[ "$RESULT" != "failure" ]]; then
+            echo "::error::Expected the send to be blocked (failure) but got '$RESULT'"
+            exit 1
+          fi
+          echo "OK: send was blocked, nothing published to Datadog/Slack"
