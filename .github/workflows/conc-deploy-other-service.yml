@@ -1,0 +1,9 @@
+name: conc-deploy-other-service
+on:
+  push:
+    branches: [test/SWPBL-273052-rollback-harness]
+jobs:
+  deploy:
+    uses: ./.github/workflows/prod-deploy-standin.yml
+    with:
+      service: poc-conc-other

@@ -1,0 +1,20 @@
+name: stub-env
+on:
+  workflow_call:
+    inputs:
+      version: { type: string, required: false, default: '' }
+      sha:     { type: string, required: false, default: '' }
+    outputs:
+      version: { value: ${{ jobs.s.outputs.version }} }
+      sha:     { value: ${{ jobs.s.outputs.sha }} }
+jobs:
+  s:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.o.outputs.version }}
+      sha: ${{ steps.o.outputs.sha }}
+    steps:
+      - id: o
+        run: |
+          echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          echo "sha=${{ inputs.sha }}" >> "$GITHUB_OUTPUT"

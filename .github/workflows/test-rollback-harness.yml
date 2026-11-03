@@ -1,0 +1,187 @@
+name: test-rollback-harness (SWPBL-273052 POC)
+on:
+  push:
+    branches: [test/SWPBL-273052-rollback-harness]
+  workflow_dispatch:
+jobs:
+  s-prod-normal:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-a"
+      argo-service-name: ""
+      environment: prod
+      region: "us-east-1"
+      team: poc
+      tag-prefix: "v"
+      stub-current-version: "1.0.5"
+      stub-previous-version: "1.0.4"
+      stub-final-state: success
+  s-prod-bare-tags:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-b"
+      argo-service-name: ""
+      environment: prod
+      region: "eu-west-1"
+      team: poc
+      tag-prefix: ""
+      stub-current-version: "2.0.0"
+      stub-previous-version: "1.9.0"
+      stub-final-state: success
+  s-prod-same-version:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-c"
+      argo-service-name: ""
+      environment: prod
+      region: "us-east-1"
+      team: poc
+      tag-prefix: "v"
+      stub-current-version: "1.0.4"
+      stub-previous-version: "1.0.4"
+      stub-final-state: success
+  s-prod-canary:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-d"
+      argo-service-name: "poc-d-canary"
+      environment: prod
+      region: "us-east-1"
+      team: poc
+      tag-prefix: "v"
+      stub-current-version: "1.0.5"
+      stub-previous-version: "1.0.4"
+      stub-final-state: success
+  s-stage-nonprod:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-e"
+      argo-service-name: ""
+      environment: stage
+      region: "us-east-1"
+      team: poc
+      tag-prefix: "v"
+      stub-current-version: "1.0.5"
+      stub-previous-version: "1.0.4"
+      stub-final-state: success
+  s-prod-deploy-failed:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-f"
+      argo-service-name: ""
+      environment: prod
+      region: "us-east-1"
+      team: poc
+      tag-prefix: "v"
+      stub-current-version: "1.0.5"
+      stub-previous-version: "1.0.4"
+      stub-final-state: failure
+  s-bad-region-injection:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-g"
+      argo-service-name: ""
+      environment: prod
+      region: "us-east-1;id"
+      team: poc
+      tag-prefix: "v"
+      stub-current-version: "1"
+      stub-previous-version: "0"
+      stub-final-state: success
+  s-bad-region-subshell:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-h"
+      argo-service-name: ""
+      environment: prod
+      region: "a$(id)"
+      team: poc
+      tag-prefix: "v"
+      stub-current-version: "1"
+      stub-previous-version: "0"
+      stub-final-state: success
+  s-region-all:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-i"
+      argo-service-name: ""
+      environment: prod
+      region: "all"
+      team: poc
+      tag-prefix: "v"
+      stub-current-version: "1"
+      stub-previous-version: "0"
+      stub-final-state: success
+  s-bad-service-name:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-j;id"
+      argo-service-name: ""
+      environment: prod
+      region: "us-east-1"
+      team: poc
+      tag-prefix: "v"
+      stub-current-version: "1"
+      stub-previous-version: "0"
+      stub-final-state: success
+  s-bad-argo-service-name:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: "poc-k"
+      argo-service-name: "x y"
+      environment: prod
+      region: "us-east-1"
+      team: poc
+      tag-prefix: "v"
+      stub-current-version: "1"
+      stub-previous-version: "0"
+      stub-final-state: success
+  assert:
+    needs: [s-prod-normal, s-prod-bare-tags, s-prod-same-version, s-prod-canary, s-stage-nonprod, s-prod-deploy-failed, s-bad-region-injection, s-bad-region-subshell, s-region-all, s-bad-service-name, s-bad-argo-service-name]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert every scenario
+        env:
+          R_prod_normal: ${{ needs.s-prod-normal.result }}
+          O_prod_normal: ${{ needs.s-prod-normal.outputs.results }}
+          R_prod_bare_tags: ${{ needs.s-prod-bare-tags.result }}
+          O_prod_bare_tags: ${{ needs.s-prod-bare-tags.outputs.results }}
+          R_prod_same_version: ${{ needs.s-prod-same-version.result }}
+          O_prod_same_version: ${{ needs.s-prod-same-version.outputs.results }}
+          R_prod_canary: ${{ needs.s-prod-canary.result }}
+          O_prod_canary: ${{ needs.s-prod-canary.outputs.results }}
+          R_stage_nonprod: ${{ needs.s-stage-nonprod.result }}
+          O_stage_nonprod: ${{ needs.s-stage-nonprod.outputs.results }}
+          R_prod_deploy_failed: ${{ needs.s-prod-deploy-failed.result }}
+          O_prod_deploy_failed: ${{ needs.s-prod-deploy-failed.outputs.results }}
+          R_bad_region_injection: ${{ needs.s-bad-region-injection.result }}
+          O_bad_region_injection: ${{ needs.s-bad-region-injection.outputs.results }}
+          R_bad_region_subshell: ${{ needs.s-bad-region-subshell.result }}
+          O_bad_region_subshell: ${{ needs.s-bad-region-subshell.outputs.results }}
+          R_region_all: ${{ needs.s-region-all.result }}
+          O_region_all: ${{ needs.s-region-all.outputs.results }}
+          R_bad_service_name: ${{ needs.s-bad-service-name.result }}
+          O_bad_service_name: ${{ needs.s-bad-service-name.outputs.results }}
+          R_bad_argo_service_name: ${{ needs.s-bad-argo-service-name.result }}
+          O_bad_argo_service_name: ${{ needs.s-bad-argo-service-name.outputs.results }}
+        run: |
+          fail=0
+          chk() { # name want-result output expected...
+            local n="$1" want="$2" res="$3" out="$4"; shift 4
+            if [ "$res" != "$want" ]; then echo "FAIL $n: workflow result '$res', wanted '$want'"; fail=1; return; fi
+            for e in "$@"; do case "$out" in *"$e"*) ;; *) echo "FAIL $n: missing '$e' in: $out"; fail=1; return;; esac; done
+            echo "PASS $n"
+          }
+          chk prod-normal success "$R_prod_normal" "$O_prod_normal" 'validate-region=success' 'get-argo-service-name=success' 'get-current=success' 'resolve-previous=success' 'rollback-deploy=success' 'sync-github-releases=success' 'promote:v1.0.4 annotate:v1.0.5 revert-to:v1.0.4'
+          chk prod-bare-tags success "$R_prod_bare_tags" "$O_prod_bare_tags" 'sync-github-releases=success' 'promote:1.9.0 annotate:2.0.0 revert-to:1.9.0' '"region":"eu-west-1"'
+          chk prod-same-version success "$R_prod_same_version" "$O_prod_same_version" 'get-current=success' 'rollback-deploy=success' 'sync-github-releases=skipped'
+          chk prod-canary success "$R_prod_canary" "$O_prod_canary" 'get-current=skipped' 'rollback-deploy=success' 'sync-github-releases=skipped'
+          chk stage-nonprod success "$R_stage_nonprod" "$O_stage_nonprod" 'get-current=skipped' 'rollback-deploy=success' 'sync-github-releases=skipped'
+          chk prod-deploy-failed success "$R_prod_deploy_failed" "$O_prod_deploy_failed" 'get-current=success' 'rollback-deploy=success' 'sync-github-releases=skipped'
+          chk bad-region-injection failure "$R_bad_region_injection" ""
+          chk bad-region-subshell failure "$R_bad_region_subshell" ""
+          chk region-all failure "$R_region_all" ""
+          chk bad-service-name failure "$R_bad_service_name" ""
+          chk bad-argo-service-name failure "$R_bad_argo_service_name" ""
+          exit $fail

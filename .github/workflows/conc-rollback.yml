@@ -1,0 +1,15 @@
+name: conc-rollback
+on:
+  push:
+    branches: [test/SWPBL-273052-rollback-harness]
+jobs:
+  rollback:
+    uses: ./.github/workflows/rollback-harness.yml
+    with:
+      service: poc-conc
+      environment: prod
+      region: us-east-1
+      team: poc
+      stub-current-version: '1.0.5'
+      stub-previous-version: '1.0.4'
+      stub-final-state: success

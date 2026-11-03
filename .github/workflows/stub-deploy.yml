@@ -1,0 +1,17 @@
+name: stub-deploy
+on:
+  workflow_call:
+    inputs:
+      final-state: { type: string, required: true }
+    outputs:
+      final-state: { value: ${{ jobs.s.outputs.final-state }} }
+jobs:
+  s:
+    runs-on: ubuntu-latest
+    outputs:
+      final-state: ${{ steps.o.outputs.fs }}
+    steps:
+      - id: o
+        run: |
+          sleep 25
+          echo "fs=${{ inputs.final-state }}" >> "$GITHUB_OUTPUT"

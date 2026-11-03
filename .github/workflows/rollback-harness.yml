@@ -1,0 +1,165 @@
+name: argo-rollback harness (generated from real workflow.yml)
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: Service name for Docker image and artifacts
+        type: string
+        required: true
+      argo-service-name:
+        description: Exact Argo app name to roll back (defaults to service input if not specified). For a canary rollback, pass the full canary app name here (e.g. 'my-service-canary') — the canary variant is not derived.
+        type: string
+        required: false
+        default: ""
+      environment:
+        description: Deployment environment (int|test|perf|stage|prod)
+        type: string
+        required: true
+      region:
+        description: Single deployment region to roll back (e.g. 'us-east-1'). 'all' is not supported — rollback is region-specific.
+        type: string
+        required: true
+      team:
+        description: Team that owns the service
+        type: string
+        required: true
+      image-name:
+        description: The name of the image to promote in Artifactory if it is different from the service name
+        type: string
+        required: false
+        default: ""
+      tag-prefix:
+        description: Prefix the service's release tags use ahead of the version (e.g. 'account-service-', or '' if the service tags bare versions).
+        type: string
+        required: false
+        default: ""
+      deploy-timeout-minutes:
+        description: Timeout in minutes for the deploy job
+        type: number
+        required: false
+        default: 20
+      wait-for-deploy-and-test-timeout-minutes:
+        description: Timeout in minutes for the wait-for-deploy-and-test job
+        type: number
+        required: false
+        default: 45
+      stub-current-version:
+        type: string
+        required: false
+        default: ""
+      stub-previous-version:
+        type: string
+        required: false
+        default: ""
+      stub-final-state:
+        type: string
+        required: false
+        default: ""
+    outputs:
+      results:
+        value: ${{ jobs.report.outputs.results }}
+permissions:
+  contents: read
+concurrency:
+  group: argo-prod-deploy-${{ github.repository }}-${{ inputs.service }}
+  cancel-in-progress: false
+jobs:
+  validate-region:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate region input
+        shell: bash
+        env:
+          INPUT_REGION: ${{ inputs.region }}
+        run: |
+          # Validate region: a single valid region name
+          if [[ ! "$INPUT_REGION" =~ ^[A-Za-z0-9._-]+$ || "$INPUT_REGION" == "all" ]]; then
+            echo "::error::region must be a single region for rollback (got '${INPUT_REGION}'). 'all' is not supported because previous versions can differ per region."
+            exit 1
+          fi
+          echo "Rollback region: ${INPUT_REGION}"
+  get-argo-service-name:
+    runs-on: ubuntu-latest
+    outputs:
+      argo-service-name: ${{ steps.argo-svc.outputs.name }}
+    steps:
+      - name: Determine Argo service name
+        id: argo-svc
+        shell: bash
+        env:
+          INPUT_SERVICE: ${{ inputs.service }}
+          INPUT_ARGO_SERVICE_NAME: ${{ inputs.argo-service-name }}
+        run: |
+          argo_svc="$INPUT_ARGO_SERVICE_NAME"
+          if [ -z "$argo_svc" ]; then
+            argo_svc="$INPUT_SERVICE"
+          fi
+          # Validate Argo service name: only letters, numbers, dot, underscore and hyphen.
+          if [[ ! "$argo_svc" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::argo service name is invalid."
+            exit 1
+          fi
+          echo "name=${argo_svc}" >> "$GITHUB_OUTPUT"
+          echo "Using Argo service name: ${argo_svc}"
+  get-current:
+    needs:
+      - validate-region
+      - get-argo-service-name
+    if: ${{ inputs.environment == 'prod' && !endsWith(needs.get-argo-service-name.outputs.argo-service-name, '-canary') }}
+    uses: ./.github/workflows/stub-env.yml
+    with:
+      version: ${{ inputs.stub-current-version }}
+      sha: sha-cur
+  resolve-previous:
+    needs:
+      - validate-region
+      - get-argo-service-name
+    uses: ./.github/workflows/stub-env.yml
+    with:
+      version: ${{ inputs.stub-previous-version }}
+      sha: sha-prev
+  rollback-deploy:
+    needs:
+      - resolve-previous
+      - get-argo-service-name
+      - get-current
+    if: ${{ !cancelled() && needs.resolve-previous.result == 'success' }}
+    permissions:
+      actions: read
+      checks: write
+      contents: write
+      id-token: write
+      packages: read
+      pull-requests: write
+    uses: ./.github/workflows/stub-deploy.yml
+    with:
+      final-state: ${{ inputs.stub-final-state }}
+  sync-github-releases:
+    needs:
+      - rollback-deploy
+      - resolve-previous
+      - get-current
+    if: ${{ !cancelled() && needs.get-current.result == 'success' && needs.resolve-previous.outputs.version != needs.get-current.outputs.version && needs.rollback-deploy.outputs.final-state == 'success' }}
+    continue-on-error: true
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.t.outputs.v }}
+    steps:
+      - id: t
+        run: echo 'v=promote:${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }} annotate:${{ inputs.tag-prefix }}${{ needs.get-current.outputs.version }} revert-to:${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }} regions:[{"region":"${{ inputs.region }}","status":"rolled-back"}]' >> "$GITHUB_OUTPUT"
+  report:
+    needs:
+      - validate-region
+      - get-argo-service-name
+      - get-current
+      - resolve-previous
+      - rollback-deploy
+      - sync-github-releases
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    outputs:
+      results: ${{ steps.r.outputs.v }}
+    steps:
+      - id: r
+        run: echo "v=validate-region=${{ needs.validate-region.result }} get-argo-service-name=${{ needs.get-argo-service-name.result }} get-current=${{ needs.get-current.result }} resolve-previous=${{ needs.resolve-previous.result }} rollback-deploy=${{ needs.rollback-deploy.result }} sync-github-releases=${{ needs.sync-github-releases.result }} tags=[${{ needs.sync-github-releases.outputs.tags }}]" >> "$GITHUB_OUTPUT"
