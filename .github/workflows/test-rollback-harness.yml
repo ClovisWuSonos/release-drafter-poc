@@ -83,68 +83,8 @@ jobs:
       stub-current-version: "1.0.5"
       stub-previous-version: "1.0.4"
       stub-final-state: failure
-  s-bad-region-injection:
-    uses: ./.github/workflows/rollback-harness.yml
-    with:
-      service: "poc-g"
-      argo-service-name: ""
-      environment: prod
-      region: "us-east-1;id"
-      team: poc
-      tag-prefix: "v"
-      stub-current-version: "1"
-      stub-previous-version: "0"
-      stub-final-state: success
-  s-bad-region-subshell:
-    uses: ./.github/workflows/rollback-harness.yml
-    with:
-      service: "poc-h"
-      argo-service-name: ""
-      environment: prod
-      region: "a$(id)"
-      team: poc
-      tag-prefix: "v"
-      stub-current-version: "1"
-      stub-previous-version: "0"
-      stub-final-state: success
-  s-region-all:
-    uses: ./.github/workflows/rollback-harness.yml
-    with:
-      service: "poc-i"
-      argo-service-name: ""
-      environment: prod
-      region: "all"
-      team: poc
-      tag-prefix: "v"
-      stub-current-version: "1"
-      stub-previous-version: "0"
-      stub-final-state: success
-  s-bad-service-name:
-    uses: ./.github/workflows/rollback-harness.yml
-    with:
-      service: "poc-j;id"
-      argo-service-name: ""
-      environment: prod
-      region: "us-east-1"
-      team: poc
-      tag-prefix: "v"
-      stub-current-version: "1"
-      stub-previous-version: "0"
-      stub-final-state: success
-  s-bad-argo-service-name:
-    uses: ./.github/workflows/rollback-harness.yml
-    with:
-      service: "poc-k"
-      argo-service-name: "x y"
-      environment: prod
-      region: "us-east-1"
-      team: poc
-      tag-prefix: "v"
-      stub-current-version: "1"
-      stub-previous-version: "0"
-      stub-final-state: success
   assert:
-    needs: [s-prod-normal, s-prod-bare-tags, s-prod-same-version, s-prod-canary, s-stage-nonprod, s-prod-deploy-failed, s-bad-region-injection, s-bad-region-subshell, s-region-all, s-bad-service-name, s-bad-argo-service-name]
+    needs: [s-prod-normal, s-prod-bare-tags, s-prod-same-version, s-prod-canary, s-stage-nonprod, s-prod-deploy-failed]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -162,16 +102,6 @@ jobs:
           O_stage_nonprod: ${{ needs.s-stage-nonprod.outputs.results }}
           R_prod_deploy_failed: ${{ needs.s-prod-deploy-failed.result }}
           O_prod_deploy_failed: ${{ needs.s-prod-deploy-failed.outputs.results }}
-          R_bad_region_injection: ${{ needs.s-bad-region-injection.result }}
-          O_bad_region_injection: ${{ needs.s-bad-region-injection.outputs.results }}
-          R_bad_region_subshell: ${{ needs.s-bad-region-subshell.result }}
-          O_bad_region_subshell: ${{ needs.s-bad-region-subshell.outputs.results }}
-          R_region_all: ${{ needs.s-region-all.result }}
-          O_region_all: ${{ needs.s-region-all.outputs.results }}
-          R_bad_service_name: ${{ needs.s-bad-service-name.result }}
-          O_bad_service_name: ${{ needs.s-bad-service-name.outputs.results }}
-          R_bad_argo_service_name: ${{ needs.s-bad-argo-service-name.result }}
-          O_bad_argo_service_name: ${{ needs.s-bad-argo-service-name.outputs.results }}
         run: |
           fail=0
           chk() { # name want-result output expected...
@@ -186,9 +116,51 @@ jobs:
           chk prod-canary success "$R_prod_canary" "$O_prod_canary" 'get-current=skipped' 'rollback-deploy=success' 'sync-github-releases=skipped'
           chk stage-nonprod success "$R_stage_nonprod" "$O_stage_nonprod" 'get-current=skipped' 'rollback-deploy=success' 'sync-github-releases=skipped'
           chk prod-deploy-failed success "$R_prod_deploy_failed" "$O_prod_deploy_failed" 'get-current=success' 'rollback-deploy=success' 'sync-github-releases=skipped'
-          chk bad-region-injection failure "$R_bad_region_injection" ""
-          chk bad-region-subshell failure "$R_bad_region_subshell" ""
-          chk region-all failure "$R_region_all" ""
-          chk bad-service-name failure "$R_bad_service_name" ""
-          chk bad-argo-service-name failure "$R_bad_argo_service_name" ""
+          exit $fail
+  negative-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Real validation scripts accept good input and reject bad input
+        run: |
+          cat > val-region.sh <<'EOS'
+          # The raw inputs are deliberately not echoed in the errors below: they are caller-
+          # controlled, and a '::' or newline in them would inject workflow commands.
+          if [[ -z "$INPUT_REGION" || "$INPUT_REGION" == "all" ]]; then
+            echo "::error::region must be a single region for rollback. 'all' is not supported because previous versions can differ per region."
+            exit 1
+          fi
+          if [[ ! "$INPUT_REGION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::region may contain only letters, numbers, '.', '_' and '-'."
+            exit 1
+          fi
+          # tag-prefix may be empty (bare version tags).
+          if [[ ! "$INPUT_TAG_PREFIX" =~ ^[A-Za-z0-9._/-]*$ ]]; then
+            echo "::error::tag-prefix may contain only letters, numbers, '.', '_', '/' and '-'."
+            exit 1
+          fi
+          echo "Rollback region: ${INPUT_REGION}"
+          EOS
+          cat > val-svc.sh <<'EOS'
+          argo_svc="$INPUT_ARGO_SERVICE_NAME"
+          if [ -z "$argo_svc" ]; then
+            argo_svc="$INPUT_SERVICE"
+          fi
+          # Validate Argo service name: only letters, numbers, dot, underscore and hyphen.
+          if [[ ! "$argo_svc" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::argo service name is invalid."
+            exit 1
+          fi
+          echo "name=${argo_svc}" >> "$GITHUB_OUTPUT"
+          echo "Using Argo service name: ${argo_svc}"
+          EOS
+          fail=0
+          region() { INPUT_REGION="$1" INPUT_TAG_PREFIX="${3:-}" bash -e val-region.sh >/dev/null 2>&1; rc=$?; if { [ "$2" = ok ] && [ $rc -eq 0 ]; } || { [ "$2" = bad ] && [ $rc -ne 0 ]; }; then echo "PASS region [$1] -> $2"; else echo "FAIL region [$1] wanted $2 got rc=$rc"; fail=1; fi; }
+          svc() { INPUT_SERVICE="$1" INPUT_ARGO_SERVICE_NAME="$2" GITHUB_OUTPUT=/dev/null bash -e val-svc.sh >/dev/null 2>&1; rc=$?; if { [ "$3" = ok ] && [ $rc -eq 0 ]; } || { [ "$3" = bad ] && [ $rc -ne 0 ]; }; then echo "PASS service [$1|$2] -> $3"; else echo "FAIL service [$1|$2] wanted $3 got rc=$rc"; fail=1; fi; }
+          region us-east-1 ok; region eu-west-2 ok; region us-gov-west-1 ok
+          region 'us-east-1;id' bad; region 'a$(id)' bad; region 'a b' bad; region 'a|b' bad; region all bad; region '' bad
+          region "$(printf 'us-east-1\nx')" bad
+          region us-east-1 ok v; region us-east-1 ok authz-thor-; region us-east-1 ok a/b-; region us-east-1 ok ''
+          region us-east-1 bad 'x;id'; region us-east-1 bad 'a b'; region us-east-1 bad '$(id)'; region us-east-1 bad "$(printf 'v\nx')"
+          svc my-svc '' ok; svc my-svc my-svc-canary ok; svc svc.v2_x '' ok
+          svc 'x;id' '' bad; svc my-svc 'x y' bad; svc my-svc '$(id)' bad; svc '' '' bad
           exit $fail
