@@ -1,7 +1,7 @@
 # POC ONLY: exercise send-datadog-deployment-event (v5 code) WITHOUT sending anything.
 #
 # No-publish guarantees (layered):
-#   1. workflow_dispatch only: never runs on push / PR / schedule.
+#   1. Triggers only on manual dispatch or a push to the test branch (never main/PR/schedule).
 #   2. No `secrets.*` anywhere: the API key is a dummy literal, so even if
 #      the request reached Datadog it would be rejected (403) and create no event.
 #   3. datadog-api-url points at a `.invalid` host (RFC 2606: guaranteed to never
@@ -15,6 +15,11 @@ name: test-send-datadog-v5 (no publish)
 
 on:
   workflow_dispatch:
+  # Fires only for pushes to this test branch (never main), so it can run without
+  # the file being on the default branch. Other POC workflows only trigger on main.
+  push:
+    branches: [test-send-datadog-v5-no-publish]
+    paths: [.github/workflows/test-send-datadog-v5.yml]
 
 permissions:
   contents: read
