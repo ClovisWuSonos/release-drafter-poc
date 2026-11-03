@@ -1,0 +1,61 @@
+# POC ONLY: run the real promote-release-to-latest + update-region-rollout-status actions (verbatim copies)
+# against THROWAWAY releases in this POC repo, exactly as sync-github-releases calls them. Cleans up after.
+name: test-sync-releases (POC)
+on:
+  push:
+    branches: [test-send-datadog-v5-no-publish]
+    paths: [.github/workflows/test-sync-releases.yml]
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PREV: poc-sync-${{ github.run_id }}-1.0.0
+      CUR: poc-sync-${{ github.run_id }}-1.1.0
+    steps:
+      - uses: actions/checkout@v5
+      - name: Arrange - prod is on CUR (Latest), PREV is the rollback target
+        run: |
+          gh release create "$PREV" --target "$GITHUB_SHA" --title "$PREV" --notes "previous"
+          gh release create "$CUR"  --target "$GITHUB_SHA" --title "$CUR"  --notes "current" --latest
+          [ "$(gh api repos/$GITHUB_REPOSITORY/releases/latest --jq .tag_name)" = "$CUR" ]
+
+      - name: Mark target release as latest
+        uses: ./.github/actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: ${{ env.PREV }}
+
+      - name: Annotate superseded release
+        uses: ./.github/actions/update-region-rollout-status
+        with:
+          tag: ${{ env.CUR }}
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: ${{ env.PREV }}
+          github-token: ${{ github.token }}
+
+      - name: Assert results
+        run: |
+          latest=$(gh api repos/$GITHUB_REPOSITORY/releases/latest --jq .tag_name)
+          body=$(gh release view "$CUR" --json body --jq .body)
+          echo "latest=$latest"; echo "--- body of $CUR:"; echo "$body"
+          [ "$latest" = "$PREV" ] || { echo "::error::Latest is not the rollback target"; exit 1; }
+          [[ "$body" == *rolled-back* && "$body" == *"$PREV"* ]] || { echo "::error::annotation missing"; exit 1; }
+          echo "OK: Latest re-pointed to $PREV; $CUR annotated rolled-back"
+
+      - name: Negative - promoting a missing tag must fail
+        id: neg
+        continue-on-error: true
+        uses: ./.github/actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: poc-sync-does-not-exist
+      - name: Assert negative failed
+        run: '[ "${{ steps.neg.outcome }}" = "failure" ] && echo "OK: missing tag fails"'
+
+      - name: Cleanup throwaway releases and tags
+        if: always()
+        run: gh release delete "$PREV" "$CUR" --cleanup-tag -y || true
