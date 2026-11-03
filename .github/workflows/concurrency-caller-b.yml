@@ -1,0 +1,14 @@
+name: concurrency-caller-b
+on:
+  push:
+    branches: [test-send-datadog-v5-no-publish]
+    paths: [.github/workflows/concurrency-*.yml]
+permissions:
+  contents: read
+jobs:
+  prod:
+    uses: ./.github/workflows/concurrency-callee.yml
+    with: { service: svc, environment: prod }
+  int:
+    uses: ./.github/workflows/concurrency-callee.yml
+    with: { service: svc, environment: int }

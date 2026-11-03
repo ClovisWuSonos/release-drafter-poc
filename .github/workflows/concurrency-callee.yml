@@ -1,0 +1,16 @@
+# POC ONLY: callee using the exact concurrency expression from argo-rollback-test-java. Sleeps, sends nothing.
+name: concurrency-callee
+on:
+  workflow_call:
+    inputs:
+      service: { type: string, required: true }
+      environment: { type: string, required: true }
+concurrency:
+  group: ${{ inputs.environment == 'prod' && format('argo-prod-deploy-{0}-{1}', github.repository, inputs.service) || format('argo-rollback-{0}', github.run_id) }}
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - run: echo "env=${{ inputs.environment }} start=$(date +%s)"; sleep 30; echo "end=$(date +%s)"
