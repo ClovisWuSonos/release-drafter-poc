@@ -2,6 +2,8 @@ name: test-error-visibility
 on:
   push:
     branches: [test-error-visibility]
+permissions:
+  contents: write
 env:
   PLACEHOLDER: x
 jobs:
