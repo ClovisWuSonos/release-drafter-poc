@@ -1,0 +1,13 @@
+name: pm-C-missing-pull-requests
+on:
+  push:
+    branches: [test-perm-matrix]
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions:
+      contents: write
+      checks: write
+      id-token: write
+    uses: ./.github/workflows/perm-called.yml

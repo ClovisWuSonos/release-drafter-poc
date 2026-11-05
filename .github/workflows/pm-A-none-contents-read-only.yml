@@ -1,0 +1,10 @@
+name: pm-A-none-contents-read-only
+on:
+  push:
+    branches: [test-perm-matrix]
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions: {}
+    uses: ./.github/workflows/perm-called.yml

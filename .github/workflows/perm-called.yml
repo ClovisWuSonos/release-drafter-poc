@@ -1,0 +1,13 @@
+name: perm-called
+on:
+  workflow_call:
+permissions:
+  contents: write
+  pull-requests: write
+  checks: write
+  id-token: write
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "called workflow ran"

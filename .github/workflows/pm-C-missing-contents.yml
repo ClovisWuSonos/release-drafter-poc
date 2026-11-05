@@ -1,0 +1,13 @@
+name: pm-C-missing-contents
+on:
+  push:
+    branches: [test-perm-matrix]
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions:
+      pull-requests: write
+      checks: write
+      id-token: write
+    uses: ./.github/workflows/perm-called.yml

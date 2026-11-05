@@ -1,0 +1,13 @@
+name: pm-C-missing-id-token
+on:
+  push:
+    branches: [test-perm-matrix]
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+    uses: ./.github/workflows/perm-called.yml
