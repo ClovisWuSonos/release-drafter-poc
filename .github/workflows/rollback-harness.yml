@@ -63,16 +63,6 @@ on:
         type: boolean
         required: false
         default: false
-    secrets:
-      github-app-id:
-        description: GitHub App ID for token creation
-        required: true
-      github-app-private-key:
-        description: GitHub App private key for token creation
-        required: true
-      datadog-api-key:
-        description: Datadog API key
-        required: true
     outputs:
       results:
         value: ${{ jobs.report.outputs.results }}
@@ -80,10 +70,7 @@ permissions:
   contents: read
 jobs:
   validate-region:
-    runs-on:
-      - self-hosted
-      - basic
-      - service-optimized
+    runs-on: ubuntu-latest
     steps:
       - name: Validate region input
         shell: bash
@@ -97,10 +84,7 @@ jobs:
           fi
           echo "Rollback region: ${INPUT_REGION}"
   get-argo-service-name:
-    runs-on:
-      - self-hosted
-      - basic
-      - service-optimized
+    runs-on: ubuntu-latest
     outputs:
       argo-service-name: ${{ steps.argo-svc.outputs.name }}
     steps:
