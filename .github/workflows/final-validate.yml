@@ -39,6 +39,8 @@ jobs:
     needs: [resolve-previous, versions]
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Create GitHub App token
@@ -68,6 +70,8 @@ jobs:
     needs: [resolve-previous, versions]
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Create GitHub App token
@@ -97,6 +101,8 @@ jobs:
     needs: [resolve-previous, versions]
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Create GitHub App token
@@ -126,6 +132,8 @@ jobs:
     needs: [resolve-previous, versions]
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Create GitHub App token
