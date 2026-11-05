@@ -1,0 +1,44 @@
+name: guard-3-non-prod-or-canary
+on:
+  push:
+    branches: [test-guard]
+jobs:
+  resolve-previous:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1.0.4" >> "$GITHUB_OUTPUT"
+  get-current:
+    if: false
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo
+  rollback-deploy:
+    needs: [resolve-previous, get-current]
+    if: ${{ !cancelled() && needs.resolve-previous.result == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      final-state: ${{ steps.f.outputs.final }}
+    steps:
+      - id: f
+        run: echo "final=success" >> "$GITHUB_OUTPUT"
+  verify-current:
+    needs: [rollback-deploy, resolve-previous, get-current]
+    if: ${{ !cancelled() && needs.get-current.result == 'success' && needs.rollback-deploy.outputs.final-state == 'success' && needs.get-current.outputs.version != needs.resolve-previous.outputs.version }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1.0.4" >> "$GITHUB_OUTPUT"
+  sync-github-releases:
+    needs: [resolve-previous, get-current, verify-current]
+    if: ${{ !cancelled() && needs.verify-current.result == 'success' && needs.verify-current.outputs.version == needs.resolve-previous.outputs.version }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "sync ran"
