@@ -1,4 +1,4 @@
-name: Rollback pipeline (mimic) - sync fails, run stays green
+name: Rollback pipeline - sync-github-releases fails, run stays green
 on:
   push:
     branches: [test-overall-run]
