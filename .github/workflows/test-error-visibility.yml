@@ -1,119 +1,168 @@
-name: test-error-visibility
+name: PROOF - sync errors are visible with continue-on-error
+# Every job below mimics sync-github-releases (continue-on-error: true) and forces one failure.
+# No warning step. Expect: run header green, each job red X with its real error in Annotations.
 on:
   push:
     branches: [test-error-visibility]
-permissions:
-  contents: write
-env:
-  PLACEHOLDER: x
 jobs:
-  resolve-previous:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.v.outputs.version }}
-    steps:
-      - id: v
-        run: echo "version=1.0.4" >> "$GITHUB_OUTPUT"
-  get-current:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.v.outputs.version }}
-    steps:
-      - id: v
-        run: echo "version=1.0.5" >> "$GITHUB_OUTPUT"
-  case-success:
-    needs: [resolve-previous, get-current]
+  p1:
+    name: "PROMOTE - release not found"
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Promote
-        uses: ./actions/promote-release-to-latest
+      - uses: ./actions/promote-release-to-latest
         with:
           github-token: ${{ github.token }}
-          tag: rb-e2e-1.0.5
-      - name: Annotate
-        uses: ./actions/update-region-rollout-status
-        with:
-          tag: rb-e2e-1.0.5
-          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
-          reverted-to-tag: rb-e2e-1.0.4
-          github-token: ${{ github.token }}
-      - name: Warn that release sync failed
-        if: ${{ failure() }}
-        env:
-          SUPERSEDED_TAG: rb-e2e-${{ needs.get-current.outputs.version }}
-          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
-        run: echo "::warning::GitHub release sync failed. Latest may still point to $SUPERSEDED_TAG instead of $TARGET_TAG."
-  case-promote-fails:
-    needs: [resolve-previous, get-current]
+          tag: no-such-release-1.0.0
+  p2:
+    name: "PROMOTE - GitHub API 401 bad credentials"
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Promote
-        uses: ./actions/promote-release-to-latest
-        with:
-          github-token: ${{ github.token }}
-          tag: does-not-exist-9
-      - name: Annotate
-        uses: ./actions/update-region-rollout-status
-        with:
-          tag: rb-e2e-1.0.5
-          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
-          reverted-to-tag: rb-e2e-1.0.4
-          github-token: ${{ github.token }}
-      - name: Warn that release sync failed
-        if: ${{ failure() }}
-        env:
-          SUPERSEDED_TAG: rb-e2e-${{ needs.get-current.outputs.version }}
-          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
-        run: echo "::warning::GitHub release sync failed. Latest may still point to $SUPERSEDED_TAG instead of $TARGET_TAG."
-  case-annotate-fails:
-    needs: [resolve-previous, get-current]
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Promote
-        uses: ./actions/promote-release-to-latest
-        with:
-          github-token: ${{ github.token }}
-          tag: rb-e2e-1.0.5
-      - name: Annotate
-        uses: ./actions/update-region-rollout-status
-        with:
-          tag: does-not-exist-9
-          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
-          reverted-to-tag: rb-e2e-1.0.4
-          github-token: ${{ github.token }}
-      - name: Warn that release sync failed
-        if: ${{ failure() }}
-        env:
-          SUPERSEDED_TAG: rb-e2e-${{ needs.get-current.outputs.version }}
-          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
-        run: echo "::warning::GitHub release sync failed. Latest may still point to $SUPERSEDED_TAG instead of $TARGET_TAG."
-  case-bad-token:
-    needs: [resolve-previous, get-current]
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Promote
-        uses: ./actions/promote-release-to-latest
+      - uses: ./actions/promote-release-to-latest
         with:
           github-token: ghp_invalid
           tag: rb-e2e-1.0.5
-      - name: Annotate
-        uses: ./actions/update-region-rollout-status
+  p3:
+    name: "PROMOTE - GitHub API 403 token lacks write permission"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: rb-e2e-1.0.5
+  a1:
+    name: "ANNOTATE - release not found"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/update-region-rollout-status
+        with:
+          tag: no-such-release-1.0.0
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+  a2:
+    name: "ANNOTATE - GitHub API 401 bad credentials"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/update-region-rollout-status
         with:
           tag: rb-e2e-1.0.5
           regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
           reverted-to-tag: rb-e2e-1.0.4
           github-token: ghp_invalid
-      - name: Warn that release sync failed
-        if: ${{ failure() }}
-        env:
-          SUPERSEDED_TAG: rb-e2e-${{ needs.get-current.outputs.version }}
-          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
-        run: echo "::warning::GitHub release sync failed. Latest may still point to $SUPERSEDED_TAG instead of $TARGET_TAG."
+  a3:
+    name: "ANNOTATE - GitHub API 403 token lacks write permission"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+  a4:
+    name: "ANNOTATE - invalid regions JSON"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: 'not-json'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+  a5:
+    name: "ANNOTATE - invalid region name"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"mars-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+  a6:
+    name: "ANNOTATE - invalid status"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"exploded"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+  a7:
+    name: "ANNOTATE - duplicate region"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"},{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+  a8:
+    name: "ANNOTATE - rolled-back without reverted-to-tag"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          github-token: ${{ github.token }}
+  a9:
+    name: "ANNOTATE - reverted-to-tag equals tag"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.5
+          github-token: ${{ github.token }}
