@@ -1,0 +1,9 @@
+name: perm-caller
+on:
+  push:
+    branches: [test-permissions]
+permissions:
+  contents: read
+jobs:
+  call:
+    uses: ./.github/workflows/perm-called.yml
