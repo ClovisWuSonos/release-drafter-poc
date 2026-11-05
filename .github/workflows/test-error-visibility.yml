@@ -2,38 +2,116 @@ name: test-error-visibility
 on:
   push:
     branches: [test-error-visibility]
+env:
+  PLACEHOLDER: x
 jobs:
-  api-error-and-not-found:
+  resolve-previous:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1.0.4" >> "$GITHUB_OUTPUT"
+  get-current:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1.0.5" >> "$GITHUB_OUTPUT"
+  case-success:
+    needs: [resolve-previous, get-current]
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - name: Promote (nonexistent tag -> setFailed)
+      - name: Promote
         uses: ./actions/promote-release-to-latest
         with:
           github-token: ${{ github.token }}
-          tag: does-not-exist-1.2.3
-      - name: Annotate (nonexistent tag)
+          tag: rb-e2e-1.0.5
+      - name: Annotate
         uses: ./actions/update-region-rollout-status
         with:
-          tag: does-not-exist-1.2.3
+          tag: rb-e2e-1.0.5
           regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
-          reverted-to-tag: other-1.0.0
+          reverted-to-tag: rb-e2e-1.0.4
           github-token: ${{ github.token }}
-  bad-token:
+      - name: Warn that release sync failed
+        if: ${{ failure() }}
+        env:
+          SUPERSEDED_TAG: rb-e2e-${{ needs.get-current.outputs.version }}
+          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
+        run: echo "::warning::GitHub release sync failed. Latest may still point to $SUPERSEDED_TAG instead of $TARGET_TAG."
+  case-promote-fails:
+    needs: [resolve-previous, get-current]
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - name: Promote (bad token -> API error thrown)
+      - name: Promote
+        uses: ./actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: does-not-exist-9
+      - name: Annotate
+        uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+      - name: Warn that release sync failed
+        if: ${{ failure() }}
+        env:
+          SUPERSEDED_TAG: rb-e2e-${{ needs.get-current.outputs.version }}
+          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
+        run: echo "::warning::GitHub release sync failed. Latest may still point to $SUPERSEDED_TAG instead of $TARGET_TAG."
+  case-annotate-fails:
+    needs: [resolve-previous, get-current]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Promote
+        uses: ./actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: rb-e2e-1.0.5
+      - name: Annotate
+        uses: ./actions/update-region-rollout-status
+        with:
+          tag: does-not-exist-9
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+      - name: Warn that release sync failed
+        if: ${{ failure() }}
+        env:
+          SUPERSEDED_TAG: rb-e2e-${{ needs.get-current.outputs.version }}
+          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
+        run: echo "::warning::GitHub release sync failed. Latest may still point to $SUPERSEDED_TAG instead of $TARGET_TAG."
+  case-bad-token:
+    needs: [resolve-previous, get-current]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Promote
         uses: ./actions/promote-release-to-latest
         with:
           github-token: ghp_invalid
           tag: rb-e2e-1.0.5
-      - name: Annotate (bad token)
+      - name: Annotate
         uses: ./actions/update-region-rollout-status
         with:
           tag: rb-e2e-1.0.5
           regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
           reverted-to-tag: rb-e2e-1.0.4
           github-token: ghp_invalid
+      - name: Warn that release sync failed
+        if: ${{ failure() }}
+        env:
+          SUPERSEDED_TAG: rb-e2e-${{ needs.get-current.outputs.version }}
+          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
+        run: echo "::warning::GitHub release sync failed. Latest may still point to $SUPERSEDED_TAG instead of $TARGET_TAG."
