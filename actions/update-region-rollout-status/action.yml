@@ -1,0 +1,38 @@
+name: Update Region Rollout Status
+description: "Adds or updates region rollout status in a GitHub release."
+
+inputs:
+  tag:
+    description: "Git tag of the release to update (e.g. account-service-2.14.200)."
+    required: true
+  regions-status:
+    description: |-
+      JSON array of {region, status} pairs. Statuses: complete | failed | rolled-back.
+      single region example: [{"region":"us-east-1","status":"complete"}] or [{"region":"eu-west-1","status":"rolled-back"}]
+      multi-regions example: [{"region":"us-east-1","status":"complete"},{"region":"eu-west-1","status":"complete"}]
+    required: true
+  reverted-to-tag:
+    description: "Tag that production was reverted to. Required for rollback status only."
+    required: false
+  github-token:
+    description: "GitHub token with contents: write permission."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v7
+      env:
+        TAG: ${{ inputs.tag }}
+        REGIONS: ${{ inputs.regions-status }}
+        REVERTED_TO_TAG: ${{ inputs.reverted-to-tag }}
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { updateRolloutStatus } = require(`${process.env.ACTION_PATH}/update-rollout-status.cjs`);
+          await updateRolloutStatus({ github, core, context,
+            tag: process.env.TAG,
+            regionsJson: process.env.REGIONS,
+            rolledBackTo: process.env.REVERTED_TO_TAG || null,
+          });

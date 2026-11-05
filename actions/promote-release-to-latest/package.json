@@ -1,0 +1,14 @@
+{
+  "name": "action-promote-release-to-latest",
+  "private": true,
+  "version": "0.1.0",
+  "license": "UNLICENSED",
+  "description": "GitHub Action that promotes a draft release as the Latest Release or re-points a published release as the Latest Release",
+  "scripts": {
+    "build": "rimraf dist && copyfiles action.yml dist",
+    "clean": "rimraf dist .turbo node_modules"
+  },
+  "devDependencies": {
+    "@sonos-inc/toolkit": "workspace:*"
+  }
+}

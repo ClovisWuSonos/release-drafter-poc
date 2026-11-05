@@ -1,0 +1,152 @@
+name: Final validation of workflow.yml changes
+on:
+  push:
+    branches: [test-final-validate]
+permissions:
+  contents: read
+jobs:
+  resolve-previous:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1.0.4" >> "$GITHUB_OUTPUT"
+  versions:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1.0.5" >> "$GITHUB_OUTPUT"
+  get-current:
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+      id-token: write
+    uses: ./.github/workflows/perm-called.yml
+  verify-current:
+    needs: [get-current]
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+      id-token: write
+    uses: ./.github/workflows/perm-called.yml
+  s1:
+    name: "1 all succeed -> NO warning"
+    needs: [resolve-previous, versions]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub App token
+        id: app-token
+        run: "true"
+      - name: Mark target release as latest
+        id: promote
+        uses: ./actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: rb-e2e-1.0.4
+      - name: Annotate superseded release
+        uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+      - name: Warn that Latest was not updated
+        if: ${{ failure() && steps.promote.outcome != 'success' }}
+        env:
+          SUPERSEDED_TAG: rb-e2e-${{ needs.versions.outputs.version }}
+          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
+        run: echo "::warning::GitHub release sync failed. Latest may still be $SUPERSEDED_TAG instead of the rollback target $TARGET_TAG."
+  s2:
+    name: "2 promote fails -> warning"
+    needs: [resolve-previous, versions]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub App token
+        id: app-token
+        run: "true"
+      - name: Mark target release as latest
+        id: promote
+        uses: ./actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: no-such-1.0.4
+      - name: Annotate superseded release
+        uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+      - name: Warn that Latest was not updated
+        if: ${{ failure() && steps.promote.outcome != 'success' }}
+        env:
+          SUPERSEDED_TAG: rb-e2e-${{ needs.versions.outputs.version }}
+          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
+        run: echo "::warning::GitHub release sync failed. Latest may still be $SUPERSEDED_TAG instead of the rollback target $TARGET_TAG."
+  s3:
+    name: "3 only annotate fails -> NO warning"
+    needs: [resolve-previous, versions]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub App token
+        id: app-token
+        run: "true"
+      - name: Mark target release as latest
+        id: promote
+        uses: ./actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: rb-e2e-1.0.5
+      - name: Annotate superseded release
+        uses: ./actions/update-region-rollout-status
+        with:
+          tag: no-such-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+      - name: Warn that Latest was not updated
+        if: ${{ failure() && steps.promote.outcome != 'success' }}
+        env:
+          SUPERSEDED_TAG: rb-e2e-${{ needs.versions.outputs.version }}
+          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
+        run: echo "::warning::GitHub release sync failed. Latest may still be $SUPERSEDED_TAG instead of the rollback target $TARGET_TAG."
+  s4:
+    name: "4 token step fails -> warning"
+    needs: [resolve-previous, versions]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub App token
+        id: app-token
+        run: "exit 1"
+      - name: Mark target release as latest
+        id: promote
+        uses: ./actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: rb-e2e-1.0.4
+      - name: Annotate superseded release
+        uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ${{ github.token }}
+      - name: Warn that Latest was not updated
+        if: ${{ failure() && steps.promote.outcome != 'success' }}
+        env:
+          SUPERSEDED_TAG: rb-e2e-${{ needs.versions.outputs.version }}
+          TARGET_TAG: rb-e2e-${{ needs.resolve-previous.outputs.version }}
+        run: echo "::warning::GitHub release sync failed. Latest may still be $SUPERSEDED_TAG instead of the rollback target $TARGET_TAG."
