@@ -1,0 +1,88 @@
+name: test-rollback-harness-v2 (SWPBL-273052 POC)
+on:
+  push:
+    branches: [test/SWPBL-273052-harness-v2]
+  workflow_dispatch:
+permissions:
+  actions: read
+  checks: write
+  contents: write
+  id-token: write
+  packages: read
+  pull-requests: write
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Seed rb2-* releases (recreated each run)
+        run: |
+          for v in 1.0.4 1.0.5; do gh release delete "rb2-$v" --cleanup-tag --yes 2>/dev/null || true; done
+          gh release create rb2-1.0.4 --target "$GITHUB_SHA" --title rb2-1.0.4 --notes "target" --latest=false
+          gh release create rb2-1.0.5 --target "$GITHUB_SHA" --title rb2-1.0.5 --notes "bad release" --latest
+  # Non-release scenarios run in parallel (stubbed sync, no GitHub release writes).
+  s-drift:
+    needs: seed
+    uses: ./.github/workflows/rollback-harness.yml
+    with: { service: poc-drift, environment: prod, region: us-east-1, team: poc, tag-prefix: "rb2-", stub-current-version: "1.0.5", stub-previous-version: "1.0.4", stub-verify-version: "1.0.6", stub-final-state: success }
+  s-deploy-failed:
+    needs: seed
+    uses: ./.github/workflows/rollback-harness.yml
+    with: { service: poc-fail, environment: prod, region: us-east-1, team: poc, tag-prefix: "rb2-", stub-current-version: "1.0.5", stub-previous-version: "1.0.4", stub-final-state: failure }
+  s-stage:
+    needs: seed
+    uses: ./.github/workflows/rollback-harness.yml
+    with: { service: poc-stage, environment: stage, region: us-east-1, team: poc, tag-prefix: "rb2-", stub-current-version: "1.0.5", stub-previous-version: "1.0.4", stub-final-state: success }
+  s-canary:
+    needs: seed
+    uses: ./.github/workflows/rollback-harness.yml
+    with: { service: poc-can, argo-service-name: poc-can-canary, environment: prod, region: us-east-1, team: poc, tag-prefix: "rb2-", stub-current-version: "1.0.5", stub-previous-version: "1.0.4", stub-final-state: success }
+  s-same-version:
+    needs: seed
+    uses: ./.github/workflows/rollback-harness.yml
+    with: { service: poc-same, environment: prod, region: us-east-1, team: poc, tag-prefix: "rb2-", stub-current-version: "1.0.4", stub-previous-version: "1.0.4", stub-final-state: success }
+  # Real-release scenarios mutate "Latest", so they run one after another.
+  s-real-ok:
+    needs: seed
+    uses: ./.github/workflows/rollback-harness.yml
+    with: { service: poc-ok, environment: prod, region: us-east-1, team: poc, tag-prefix: "rb2-", stub-current-version: "1.0.5", stub-previous-version: "1.0.4", stub-final-state: success, real-release-sync: true }
+  s-real-promote-fails:
+    needs: s-real-ok
+    if: ${{ always() }}
+    uses: ./.github/workflows/rollback-harness.yml
+    with: { service: poc-pf, environment: prod, region: us-east-1, team: poc, tag-prefix: "rb2-", stub-current-version: "1.0.5", stub-previous-version: "7.7.7", stub-final-state: success, real-release-sync: true }
+  s-real-annotate-fails:
+    needs: s-real-promote-fails
+    if: ${{ always() }}
+    uses: ./.github/workflows/rollback-harness.yml
+    with: { service: poc-af, environment: prod, region: us-east-1, team: poc, tag-prefix: "rb2-", stub-current-version: "9.9.9", stub-previous-version: "1.0.4", stub-final-state: success, real-release-sync: true }
+  assert:
+    needs: [s-drift, s-deploy-failed, s-stage, s-canary, s-same-version, s-real-ok, s-real-promote-fails, s-real-annotate-fails]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert scenarios
+        env:
+          N: ${{ toJSON(needs) }}
+        run: |
+          echo "$N" | jq -r 'to_entries[] | "\(.key): \(.value.result) \(.value.outputs.results)"'
+          fail=0
+          chk() { # job want-result expected...
+            local j="$1" want="$2"; shift 2
+            local res out; res=$(echo "$N" | jq -r --arg j "$j" '.[$j].result'); out=$(echo "$N" | jq -r --arg j "$j" '.[$j].outputs.results')
+            if [ "$res" != "$want" ]; then echo "FAIL $j: result '$res', wanted '$want'"; fail=1; return; fi
+            for e in "$@"; do case "$out" in *"$e"*) ;; *) echo "FAIL $j: missing '$e'"; fail=1; return;; esac; done
+            echo "PASS $j"
+          }
+          chk s-drift success 'verify-current=success' 'sync-github-releases=skipped'
+          chk s-deploy-failed success 'rollback-deploy=success' 'verify-current=skipped' 'sync-github-releases=skipped'
+          chk s-stage success 'get-current=skipped' 'verify-current=skipped' 'sync-github-releases=skipped'
+          chk s-canary success 'get-current=skipped' 'verify-current=skipped' 'sync-github-releases=skipped'
+          chk s-same-version success 'get-current=success' 'verify-current=skipped' 'sync-github-releases=skipped'
+          chk s-real-ok success 'sync-github-releases=success' 'warn=skipped'
+          # Failed sync must NOT fail the caller (continue-on-error) but MUST warn.
+          chk s-real-promote-fails success 'warn=success'
+          chk s-real-annotate-fails success 'warn=success'
+          exit $fail

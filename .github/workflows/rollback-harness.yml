@@ -51,6 +51,10 @@ on:
         type: string
         required: false
         default: ""
+      stub-verify-version:
+        type: string
+        required: false
+        default: ""
       stub-final-state:
         type: string
         required: false
@@ -59,17 +63,27 @@ on:
         type: boolean
         required: false
         default: false
+    secrets:
+      github-app-id:
+        description: GitHub App ID for token creation
+        required: true
+      github-app-private-key:
+        description: GitHub App private key for token creation
+        required: true
+      datadog-api-key:
+        description: Datadog API key
+        required: true
     outputs:
       results:
         value: ${{ jobs.report.outputs.results }}
 permissions:
   contents: read
-concurrency:
-  group: argo-prod-deploy-${{ github.repository }}-${{ inputs.service }}
-  cancel-in-progress: false
 jobs:
   validate-region:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - basic
+      - service-optimized
     steps:
       - name: Validate region input
         shell: bash
@@ -83,7 +97,10 @@ jobs:
           fi
           echo "Rollback region: ${INPUT_REGION}"
   get-argo-service-name:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - basic
+      - service-optimized
     outputs:
       argo-service-name: ${{ steps.argo-svc.outputs.name }}
     steps:
@@ -110,6 +127,11 @@ jobs:
       - validate-region
       - get-argo-service-name
     if: ${{ inputs.environment == 'prod' && !endsWith(needs.get-argo-service-name.outputs.argo-service-name, '-canary') }}
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+      id-token: write
     uses: ./.github/workflows/stub-env.yml
     with:
       version: ${{ inputs.stub-current-version }}
@@ -138,38 +160,65 @@ jobs:
     uses: ./.github/workflows/stub-deploy.yml
     with:
       final-state: ${{ inputs.stub-final-state }}
-  sync-github-releases:
+  verify-current:
     needs:
       - rollback-deploy
       - resolve-previous
+      - get-argo-service-name
       - get-current
-    if: ${{ !cancelled() && needs.get-current.result == 'success' && needs.resolve-previous.outputs.version != needs.get-current.outputs.version && needs.rollback-deploy.outputs.final-state == 'success' }}
-    continue-on-error: true
-    timeout-minutes: 5
-    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && needs.get-current.result == 'success' && needs.rollback-deploy.outputs.final-state == 'success' && needs.get-current.outputs.version != needs.resolve-previous.outputs.version }}
     permissions:
       contents: write
-    outputs:
-      tags: ${{ steps.t.outputs.v }}
+      pull-requests: write
+      checks: write
+      id-token: write
+    uses: ./.github/workflows/stub-env.yml
+    with:
+      version: ${{ inputs.stub-verify-version != '' && inputs.stub-verify-version || inputs.stub-previous-version }}
+      sha: sha-ver
+  sync-github-releases:
+    needs:
+      - resolve-previous
+      - get-current
+      - verify-current
+    if: ${{ !cancelled() && needs.verify-current.result == 'success' && needs.verify-current.outputs.version == needs.resolve-previous.outputs.version }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-        if: ${{ inputs.real-release-sync }}
-      - name: Mark target release as latest (REAL action code)
-        if: ${{ inputs.real-release-sync }}
+      - name: Mark target release as latest
+        id: promote
         uses: ./.github/actions/promote-release-to-latest
         with:
           github-token: ${{ github.token }}
           tag: ${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }}
-      - name: Annotate superseded release (REAL action code)
         if: ${{ inputs.real-release-sync }}
+      - name: Annotate superseded release
         uses: ./.github/actions/update-region-rollout-status
         with:
           tag: ${{ inputs.tag-prefix }}${{ needs.get-current.outputs.version }}
           regions-status: '[{"region":"${{ inputs.region }}","status":"rolled-back"}]'
           reverted-to-tag: ${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }}
           github-token: ${{ github.token }}
+        if: ${{ inputs.real-release-sync }}
+      - name: Warn that Latest was not updated
+        if: ${{ failure() && steps.promote.outcome != 'success' }}
+        env:
+          SUPERSEDED_TAG: ${{ inputs.tag-prefix }}${{ needs.get-current.outputs.version }}
+          TARGET_TAG: ${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }}
+        run: echo "::warning::GitHub release sync failed. Latest may still be $SUPERSEDED_TAG instead of the rollback target $TARGET_TAG."
+        id: warn
       - id: t
-        run: echo 'v=promote:${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }} annotate:${{ inputs.tag-prefix }}${{ needs.get-current.outputs.version }} revert-to:${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }} regions:[{"region":"${{ inputs.region }}","status":"rolled-back"}]' >> "$GITHUB_OUTPUT"
+        if: ${{ always() }}
+        run: |
+          echo 'v=promote:${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }} annotate:${{ inputs.tag-prefix }}${{ needs.get-current.outputs.version }} revert-to:${{ inputs.tag-prefix }}${{ needs.resolve-previous.outputs.version }}' >> "$GITHUB_OUTPUT"
+          echo "warn=${{ steps.warn.outcome }}" >> "$GITHUB_OUTPUT"
+    permissions:
+      contents: write
+    outputs:
+      tags: ${{ steps.t.outputs.v }}
+      warn: ${{ steps.t.outputs.warn }}
   report:
     needs:
       - validate-region
@@ -177,6 +226,7 @@ jobs:
       - get-current
       - resolve-previous
       - rollback-deploy
+      - verify-current
       - sync-github-releases
     if: ${{ always() }}
     runs-on: ubuntu-latest
@@ -184,4 +234,4 @@ jobs:
       results: ${{ steps.r.outputs.v }}
     steps:
       - id: r
-        run: echo 'v=validate-region=${{ needs.validate-region.result }} get-argo-service-name=${{ needs.get-argo-service-name.result }} get-current=${{ needs.get-current.result }} resolve-previous=${{ needs.resolve-previous.result }} rollback-deploy=${{ needs.rollback-deploy.result }} sync-github-releases=${{ needs.sync-github-releases.result }} tags=[${{ needs.sync-github-releases.outputs.tags }}]' >> "$GITHUB_OUTPUT"
+        run: echo 'v=validate-region=${{ needs.validate-region.result }} get-argo-service-name=${{ needs.get-argo-service-name.result }} get-current=${{ needs.get-current.result }} resolve-previous=${{ needs.resolve-previous.result }} rollback-deploy=${{ needs.rollback-deploy.result }} verify-current=${{ needs.verify-current.result }} sync-github-releases=${{ needs.sync-github-releases.result }} tags=[${{ needs.sync-github-releases.outputs.tags }}] warn=${{ needs.sync-github-releases.outputs.warn }}' >> "$GITHUB_OUTPUT"
