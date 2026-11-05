@@ -1,0 +1,14 @@
+name: perm-fixed (job-level permissions match called workflow)
+on:
+  push:
+    branches: [test-permissions-fix]
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+      id-token: write
+    uses: ./.github/workflows/perm-called.yml

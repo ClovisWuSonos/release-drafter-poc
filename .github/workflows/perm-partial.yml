@@ -1,0 +1,11 @@
+name: perm-partial (job-level only contents write)
+on:
+  push:
+    branches: [test-permissions-fix]
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/perm-called.yml
