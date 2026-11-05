@@ -1,0 +1,48 @@
+name: Promote Release to Latest
+description: >
+  Promotes a release to the Latest Release. Handles two scenarios:
+  1. draft release → published and marked as latest (forward deployment);
+  2. existing published release → re-pointed as latest (manual rollback).
+
+inputs:
+  github-token:
+    description: "GitHub token with contents: write permission to promote the release."
+    required: true
+  tag:
+    description: "The release tag to promote (e.g. account-service-2.14.200)"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Promote release to Latest
+      uses: actions/github-script@v7
+      env:
+        TAG: ${{ inputs.tag }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const tag = process.env.TAG;
+
+          const gql = await github.graphql(`
+            query($owner: String!, $repo: String!, $tag: String!) {
+              repository(owner: $owner, name: $repo) {
+                release(tagName: $tag) { databaseId }
+              }
+            }
+          `, { owner: context.repo.owner, repo: context.repo.repo, tag });
+
+          const releaseId = gql.repository.release?.databaseId;
+          if (!releaseId) {
+            core.setFailed(`no release found for tag '${tag}'`);
+            return;
+          }
+
+          await github.rest.repos.updateRelease({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            release_id: releaseId,
+            draft: false,
+            make_latest: 'true',
+          });
+
+          core.info(`Promoted release ${tag} to Latest Release`);

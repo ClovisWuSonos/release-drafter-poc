@@ -1,0 +1,37 @@
+name: test-error-visibility
+on:
+  push:
+    branches: [test-error-visibility]
+jobs:
+  api-error-and-not-found:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Promote (nonexistent tag -> setFailed)
+        uses: ./actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: does-not-exist-1.2.3
+      - name: Annotate (nonexistent tag)
+        uses: ./actions/update-region-rollout-status
+        with:
+          tag: does-not-exist-1.2.3
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: other-1.0.0
+          github-token: ${{ github.token }}
+  bad-token:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Promote (bad token -> API error thrown)
+        uses: ./actions/promote-release-to-latest
+        with:
+          github-token: ghp_invalid
+          tag: rb-e2e-1.0.5
+      - name: Annotate (bad token)
+        uses: ./actions/update-region-rollout-status
+        with:
+          tag: rb-e2e-1.0.5
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: rb-e2e-1.0.4
+          github-token: ghp_invalid
