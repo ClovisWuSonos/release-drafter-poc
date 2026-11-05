@@ -1,0 +1,14 @@
+{
+  "name": "action-update-region-rollout-status",
+  "private": true,
+  "version": "0.1.0",
+  "license": "UNLICENSED",
+  "description": "GitHub Action that adds or updates per-region rollout status in a GitHub release",
+  "scripts": {
+    "build": "rimraf dist && copyfiles action.yml update-rollout-status.cjs dist",
+    "clean": "rimraf dist .turbo node_modules"
+  },
+  "devDependencies": {
+    "@sonos-inc/toolkit": "workspace:*"
+  }
+}

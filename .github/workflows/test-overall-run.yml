@@ -1,0 +1,55 @@
+name: Rollback pipeline (mimic) - sync fails, run stays green
+on:
+  push:
+    branches: [test-overall-run]
+permissions:
+  contents: write
+jobs:
+  validate-region:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "region ok"
+  get-current:
+    needs: [validate-region]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1.0.5" >> "$GITHUB_OUTPUT"
+  resolve-previous:
+    needs: [validate-region]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1.0.4" >> "$GITHUB_OUTPUT"
+  rollback-deploy:
+    needs: [resolve-previous, get-current]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "rollback deploy succeeded"
+  verify-current:
+    needs: [rollback-deploy, resolve-previous, get-current]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "prod still runs the rollback target"
+  sync-github-releases:
+    needs: [resolve-previous, get-current, verify-current]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mark target release as latest
+        uses: ./actions/promote-release-to-latest
+        with:
+          github-token: ${{ github.token }}
+          tag: no-such-release-${{ needs.resolve-previous.outputs.version }}
+      - name: Annotate superseded release
+        uses: ./actions/update-region-rollout-status
+        with:
+          tag: no-such-release-${{ needs.get-current.outputs.version }}
+          regions-status: '[{"region":"us-east-1","status":"rolled-back"}]'
+          reverted-to-tag: no-such-release-${{ needs.resolve-previous.outputs.version }}
+          github-token: ${{ github.token }}
