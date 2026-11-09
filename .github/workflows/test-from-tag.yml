@@ -1,0 +1,58 @@
+name: Test from-tag (platform-core SWPBL-274392 mirror)
+
+# Mirrors workflows/release-draft/workflow.yml in platform-core: same release-drafter SHA
+# (v7.10.0), same inputs wiring (`from: ${{ inputs.from }}`, always passed, "" by default).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Full tag, e.g. acct-svc-9.0.3 (must already exist)"
+        required: true
+        type: string
+      from:
+        description: "from-tag; empty string = normal deploy"
+        required: false
+        type: string
+        default: ""
+      commitish:
+        description: "Commit SHA/branch the release points at"
+        required: true
+        type: string
+      publish:
+        description: "Publish the release (false = draft only)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update draft release
+        id: rd
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ inputs.tag }}
+          tag: ${{ inputs.tag }}
+          name: Account Service ${{ inputs.tag }}
+          commitish: ${{ inputs.commitish }}
+          from: ${{ inputs.from }}
+          publish: ${{ inputs.publish }}
+
+      - name: Show result
+        env:
+          BODY: ${{ steps.rd.outputs.body }}
+          TAG: ${{ inputs.tag }}
+          FROM: ${{ inputs.from }}
+        run: |
+          {
+            echo "### tag=$TAG from='$FROM'"
+            echo
+            echo "$BODY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
