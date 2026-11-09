@@ -1,0 +1,80 @@
+name: Test auto-from (Latest-derived anchor)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+      commitish:
+        required: true
+        type: string
+      override:
+        description: "explicit from (empty = auto-derive from Latest)"
+        required: false
+        type: string
+        default: ""
+      publish:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve changelog anchor
+        id: anchor
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ inputs.tag }}
+          OVERRIDE: ${{ inputs.override }}
+        with:
+          script: |
+            // Resolves the changelog anchor ("from") for release-drafter.
+            // Precedence: explicit override > the release GitHub marks "Latest" (= what prod runs) > none.
+            const resolve = async ({ github, context, core, version, override }) => {
+              if (override) return override;
+
+              // Service tag prefix = everything before the first x.y.z (e.g. "account-service-", "v").
+              const prefix = (version.match(/^(.*?)(?=\d+\.\d+\.\d+)/) || ["", ""])[1];
+
+              let latest;
+              try {
+                const { data } = await github.rest.repos.getLatestRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                });
+                latest = data.tag_name;
+              } catch (err) {
+                if (err.status !== 404) core.warning(`Could not read Latest release (${err.status}); using default anchor.`);
+                return "";
+              }
+
+              if (latest === version) return ""; // re-run of the release that is already Latest
+              // Latest is repo-wide: ignore it if it belongs to another service.
+              if (!latest.startsWith(prefix) || !/^\d/.test(latest.slice(prefix.length))) {
+                core.info(`Latest (${latest}) is not a '${prefix}' release; using default anchor.`);
+                return "";
+              }
+              return latest;
+            };
+            const from = await resolve({ github, context, core, version: process.env.VERSION, override: process.env.OVERRIDE });
+            core.info(`anchor='${from}'`);
+            core.setOutput("from", from);
+
+      - name: Update draft release
+        id: rd
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ inputs.tag }}
+          tag: ${{ inputs.tag }}
+          name: Service ${{ inputs.tag }}
+          commitish: ${{ inputs.commitish }}
+          from: ${{ steps.anchor.outputs.from }}
+          publish: ${{ inputs.publish }}
