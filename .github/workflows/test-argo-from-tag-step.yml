@@ -1,7 +1,7 @@
 name: Test argo-prod-deploy from-tag step (SWPBL-274392)
 
 # Runs the exact "Resolve from-tag" script from platform-core's argo-prod-deploy against real
-# tags in this repo (acct-svc-9.0.0 .. 9.0.4). Each case simulates prod's registry region-info.
+# tags in this repo. Each case simulates prod's registry region-info.
 
 on:
   push:
@@ -18,13 +18,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "rollback: prod older, tag exists", region_info: '{"us-east-1":{"version":"9.0.1"}}', new: "9.0.3", expect: "acct-svc-9.0.1" }
-          - { name: "prod older, tag missing", region_info: '{"us-east-1":{"version":"8.0.0"}}', new: "9.0.3", expect: "" }
-          - { name: "same version", region_info: '{"us-east-1":{"version":"9.0.3"}}', new: "9.0.3", expect: "" }
-          - { name: "prod newer (tag exists)", region_info: '{"us-east-1":{"version":"9.0.4"}}', new: "9.0.3", expect: "" }
-          - { name: "no prod entry", region_info: '{}', new: "9.0.3", expect: "" }
-          - { name: "first region differs", region_info: '{"us-east-1":{"version":"9.0.2"},"eu-west-1":{"version":"9.0.0"}}', new: "9.0.3", expect: "acct-svc-9.0.2" }
-          - { name: "malformed region-info (step fails)", region_info: 'not json', new: "9.0.3", expect: "" }
+          - { name: "rollback: prod older, tag exists", prefix: "acct-svc-", region_info: '{"us-east-1":{"version":"9.0.1"}}', new: "9.0.3", expect: "acct-svc-9.0.1" }
+          - { name: "prod older, tag missing", prefix: "acct-svc-", region_info: '{"us-east-1":{"version":"8.0.0"}}', new: "9.0.3", expect: "" }
+          - { name: "same version", prefix: "acct-svc-", region_info: '{"us-east-1":{"version":"9.0.3"}}', new: "9.0.3", expect: "" }
+          - { name: "prod newer (tag exists)", prefix: "acct-svc-", region_info: '{"us-east-1":{"version":"9.0.4"}}', new: "9.0.3", expect: "" }
+          - { name: "no prod entry", prefix: "acct-svc-", region_info: '{}', new: "9.0.3", expect: "" }
+          - { name: "first region differs", prefix: "acct-svc-", region_info: '{"us-east-1":{"version":"9.0.2"},"eu-west-1":{"version":"9.0.0"}}', new: "9.0.3", expect: "acct-svc-9.0.2" }
+          - { name: "first region missing, second present", prefix: "acct-svc-", region_info: '{"eu-west-1":{"version":"9.0.1"}}', new: "9.0.3", expect: "" }
+          - { name: "malformed region-info (step fails)", prefix: "acct-svc-", region_info: 'not json', new: "9.0.3", expect: "" }
+          - { name: "empty prefix, bare tags", prefix: "", region_info: '{"us-east-1":{"version":"8.8.1"}}', new: "9.9.15", expect: "8.8.1" }
+          - { name: "other service prefix", prefix: "bill-svc-", region_info: '{"us-east-1":{"version":"10.0.0"}}', new: "10.0.2", expect: "bill-svc-10.0.0" }
+          - { name: "prefix mismatch (acct tag via bill prefix)", prefix: "bill-svc-", region_info: '{"us-east-1":{"version":"9.0.1"}}', new: "10.0.2", expect: "" }
+          - { name: "prerelease prod 9.0.3-rc1 -> 9.0.3", prefix: "acct-svc-", region_info: '{"us-east-1":{"version":"9.0.3-rc1"}}', new: "9.0.3", expect: "" }
     steps:
       - uses: actions/checkout@v6
         continue-on-error: true
@@ -37,7 +42,7 @@ jobs:
           REGION_INFO: ${{ matrix.region_info }}
           REGION_ORDER: '[{"region":"us-east-1"},{"region":"eu-west-1"}]'
           NEW_VERSION: ${{ matrix.new }}
-          TAG_PREFIX: acct-svc-
+          TAG_PREFIX: ${{ matrix.prefix }}
         run: |
           first_region=$(echo "$REGION_ORDER" | jq -r '.[0].region')
           current_version=$(echo "$REGION_INFO" | jq -r --arg region "$first_region" '.[$region].version // empty')
@@ -51,7 +56,7 @@ jobs:
             if git ls-remote --exit-code --tags origin "refs/tags/${from_tag}"; then
               echo "value=${from_tag}" >> "$GITHUB_OUTPUT"
             else
-              echo "::error::Release tag ${from_tag} not found; using the default changelog start."
+              echo "::warning::Could not validate that release tag ${from_tag} exists; using the default changelog start."
             fi
           else
             echo "::notice::from-tag left empty: prod version '${current_version:-none}' is not older than ${NEW_VERSION}."
