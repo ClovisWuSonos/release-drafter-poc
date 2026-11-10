@@ -1,0 +1,16 @@
+name: Test from-tag step suite
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths: ["tests/from-tag/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/from-tag/run.sh
