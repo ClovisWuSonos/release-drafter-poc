@@ -1,0 +1,11 @@
+name-template: 'Service $RESOLVED_VERSION'
+change-template: '- $TITLE (#$NUMBER, @$AUTHOR)'
+categories:
+  - title: 'Features'
+    labels: ['feature']
+  - title: 'Fixes'
+    labels: ['fix']
+template: |
+  ## Changes since $PREVIOUS_TAG
+
+  $CHANGES

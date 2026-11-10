@@ -1,0 +1,23 @@
+name: Test PREVIOUS_TAG heading vs from
+on:
+  workflow_dispatch:
+    inputs:
+      tag: { required: true, type: string }
+      from: { required: false, type: string, default: "" }
+      commitish: { required: true, type: string }
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-name: release-drafter-heading.yml
+          version: ${{ inputs.tag }}
+          tag: ${{ inputs.tag }}
+          name: Service ${{ inputs.tag }}
+          commitish: ${{ inputs.commitish }}
+          from: ${{ inputs.from }}
