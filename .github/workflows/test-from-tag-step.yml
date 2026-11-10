@@ -1,0 +1,80 @@
+name: Test Resolve from-tag step (verbatim copy of argo-prod-deploy step)
+
+on:
+  workflow_dispatch:
+    inputs:
+      region_info:
+        description: 'JSON like {"us-east-1":{"version":"10.0.1"}}'
+        required: true
+        type: string
+      region_order:
+        required: true
+        type: string
+        default: '[{"region":"us-east-1"}]'
+      new_version:
+        required: true
+        type: string
+      tag_prefix:
+        required: true
+        type: string
+      commitish:
+        description: "commit for the end-to-end draft"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve from-tag
+        id: from-tag
+        continue-on-error: true
+        shell: bash
+        env:
+          REGION_INFO: ${{ inputs.region_info }}
+          REGION_ORDER: ${{ inputs.region_order }}
+          NEW_VERSION: ${{ inputs.new_version }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          first_region=$(echo "$REGION_ORDER" | jq -r '.[0].region')
+          current_version=$(echo "$REGION_INFO" | jq -r --arg region "$first_region" '.[$region].version // empty')
+
+          # sort -V cannot order pre-release versions (e.g. 1.0.2-rc.1), so use the default start.
+          case "${current_version}${NEW_VERSION}" in
+            *-*) current_version="" ;;
+          esac
+
+          oldest=$(printf '%s\n%s\n' "$current_version" "$NEW_VERSION" | sort -V | head -1)
+
+          # The changelog start must be older than the deployed version; otherwise leave from-tag empty.
+          if [ -n "$current_version" ] && [ "$current_version" != "$NEW_VERSION" ] && [ "$oldest" = "$current_version" ]; then
+            from_tag="${TAG_PREFIX}${current_version}"
+
+            if curl -fs \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/tags/${from_tag}"; then
+              echo "value=${from_tag}" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::Release tag ${from_tag} not found; using the default changelog start."
+            fi
+          else
+            echo "::notice::from-tag left empty: prod version '${current_version:-none}' is not older than ${NEW_VERSION}."
+          fi
+
+      - name: Report step result
+        run: echo "RESULT outcome=${{ steps.from-tag.outcome }} from-tag='${{ steps.from-tag.outputs.value }}'"
+
+      - name: Draft release with that from-tag
+        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ inputs.tag_prefix }}${{ inputs.new_version }}
+          tag: ${{ inputs.tag_prefix }}${{ inputs.new_version }}
+          name: Service ${{ inputs.tag_prefix }}${{ inputs.new_version }}
+          commitish: ${{ inputs.commitish }}
+          from: ${{ steps.from-tag.outputs.value }}
