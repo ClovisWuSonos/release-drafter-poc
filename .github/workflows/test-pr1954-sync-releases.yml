@@ -1,0 +1,135 @@
+name: Test PR 1954 sync-github-releases (POC only)
+
+# Mirrors the steps of `sync-github-releases` in platform-core
+# workflows/argo-rollback-test-java/workflow.yml (SWPBL-273052) against throwaway releases.
+# Only difference: GITHUB_TOKEN instead of a GitHub App token.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create throwaway releases
+        run: |
+          set -e
+          for t in pr1954-1.0.0 pr1954-2.0.0 9.9.1 9.9.2; do
+            gh release delete "$t" -R "$REPO" --cleanup-tag -y 2>/dev/null || true
+          done
+          sha=$(gh api repos/$REPO/commits/main --jq .sha)
+          for t in pr1954-1.0.0 pr1954-2.0.0 9.9.1 9.9.2; do
+            gh release create "$t" -R "$REPO" --target "$sha" --title "$t" --notes "throwaway release $t"
+          done
+          gh release edit pr1954-2.0.0 -R "$REPO" --latest
+          gh release edit 9.9.2 -R "$REPO" --latest
+          # 9.9.2 was made latest last, then put 2.0.0 back as Latest so scenario 1 starts from prod=2.0.0
+          gh release edit pr1954-2.0.0 -R "$REPO" --latest
+          echo "latest now: $(gh api repos/$REPO/releases/latest --jq .tag_name)"
+
+  sync:
+    needs: setup
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - { name: s1-happy,          prefix: "pr1954-", target: "1.0.0", sup: "2.0.0", region: us-east-1, exp_latest: pr1954-1.0.0, sup_tag: pr1954-2.0.0, has1: "us-east-1: ⏪ rolled-back on", has2: "reverted to pr1954-1.0.0", count_region: us-east-1 }
+          - { name: s2-second-region,  prefix: "pr1954-", target: "1.0.0", sup: "2.0.0", region: us-west-2, exp_latest: pr1954-1.0.0, sup_tag: pr1954-2.0.0, has1: "us-west-2: ⏪ rolled-back on", has2: "us-east-1: ⏪ rolled-back on", count_region: us-west-2 }
+          - { name: s3-rerun-same,     prefix: "pr1954-", target: "1.0.0", sup: "2.0.0", region: us-east-1, exp_latest: pr1954-1.0.0, sup_tag: pr1954-2.0.0, has1: "us-east-1: ⏪ rolled-back on", has2: "us-west-2: ⏪ rolled-back on", count_region: us-east-1 }
+          - { name: s4-missing-target, prefix: "pr1954-", target: "0.0.1", sup: "2.0.0", region: us-east-1, exp_latest: pr1954-1.0.0, sup_tag: "", has1: "", has2: "", count_region: "" }
+          - { name: s5-missing-super,  prefix: "pr1954-", target: "1.0.0", sup: "8.8.8", region: us-east-1, exp_latest: pr1954-1.0.0, sup_tag: "", has1: "", has2: "", count_region: "" }
+          - { name: s6-bare-prefix,    prefix: "",        target: "9.9.1", sup: "9.9.2", region: us-east-1, exp_latest: 9.9.1,        sup_tag: 9.9.2,        has1: "us-east-1: ⏪ rolled-back on", has2: "reverted to 9.9.1", count_region: us-east-1 }
+    name: sync (${{ matrix.name }})
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark target release as latest
+        id: promote
+        uses: sonos-inc/platform-core/actions/promote-release-to-latest@promote-release-to-latest-v0
+        with:
+          github-token: ${{ github.token }}
+          tag: ${{ matrix.prefix }}${{ matrix.target }}
+
+      - name: Annotate superseded release
+        uses: sonos-inc/platform-core/actions/update-region-rollout-status@update-region-rollout-status-v0
+        with:
+          tag: ${{ matrix.prefix }}${{ matrix.sup }}
+          regions-status: '[{"region":"${{ matrix.region }}","status":"rolled-back"}]'
+          reverted-to-tag: ${{ matrix.prefix }}${{ matrix.target }}
+          github-token: ${{ github.token }}
+
+      - name: Warn that Latest was not updated
+        if: ${{ failure() && steps.promote.outcome != 'success' }}
+        run: echo "::warning::GitHub release sync failed. Latest may still point at the superseded release."
+
+      - name: Check resulting state
+        if: ${{ always() }}
+        env:
+          EXP_LATEST: ${{ matrix.exp_latest }}
+          SUP_TAG: ${{ matrix.sup_tag }}
+          HAS1: ${{ matrix.has1 }}
+          HAS2: ${{ matrix.has2 }}
+          COUNT_REGION: ${{ matrix.count_region }}
+        run: |
+          set -e
+          latest=$(gh api repos/$REPO/releases/latest --jq .tag_name)
+          echo "latest=$latest expected=$EXP_LATEST"
+          [ "$latest" = "$EXP_LATEST" ]
+          if [ -n "$SUP_TAG" ]; then
+            body=$(gh release view "$SUP_TAG" -R "$REPO" --json body --jq .body)
+            echo "$body"
+            [ -z "$HAS1" ] || grep -qF -- "$HAS1" <<<"$body"
+            [ -z "$HAS2" ] || grep -qF -- "$HAS2" <<<"$body"
+            if [ -n "$COUNT_REGION" ]; then
+              n=$(grep -c "^$COUNT_REGION:" <<<"$body" || true)
+              echo "rows for $COUNT_REGION: $n"
+              [ "$n" = "1" ]
+            fi
+          fi
+
+  verify:
+    needs: sync
+    if: ${{ always() && needs.setup.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert per-scenario step outcomes
+        run: |
+          gh api --paginate repos/$REPO/actions/runs/${{ github.run_id }}/jobs --jq '.jobs[]' > jobs.json
+          fail=0
+          # scenario | promote | annotate | warn | state   (conclusions)
+          while IFS='|' read -r s p a w st; do
+            j=$(jq -c --arg n "sync ($s)" 'select(.name==$n)' jobs.json)
+            c(){ jq -r --arg n "$1" '.steps[]|select(.name==$n)|.conclusion' <<<"$j"; }
+            gp=$(c "Mark target release as latest"); ga=$(c "Annotate superseded release")
+            gw=$(c "Warn that Latest was not updated"); gs=$(c "Check resulting state")
+            if [ "$gp|$ga|$gw|$gs" = "$p|$a|$w|$st" ]; then echo "PASS $s  [$gp|$ga|$gw|$gs]"
+            else echo "FAIL $s  got [$gp|$ga|$gw|$gs] want [$p|$a|$w|$st]"; fail=1; fi
+          done <<'TABLE'
+          s1-happy|success|success|skipped|success
+          s2-second-region|success|success|skipped|success
+          s3-rerun-same|success|success|skipped|success
+          s4-missing-target|failure|skipped|success|success
+          s5-missing-super|success|failure|skipped|success
+          s6-bare-prefix|success|success|skipped|success
+          TABLE
+          exit $fail
+
+  cleanup:
+    needs: [sync, verify]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete throwaway releases and tags
+        run: |
+          for t in pr1954-1.0.0 pr1954-2.0.0 9.9.1 9.9.2; do
+            gh release delete "$t" -R "$REPO" --cleanup-tag -y 2>/dev/null || true
+          done
+          gh release edit other-svc-1.0.0 -R "$REPO" --latest
+          echo "latest restored: $(gh api repos/$REPO/releases/latest --jq .tag_name)"
