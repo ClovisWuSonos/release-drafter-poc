@@ -5,6 +5,8 @@ name: Test PR 1954 sync-github-releases (POC only)
 # Only difference: GITHUB_TOKEN instead of a GitHub App token.
 on:
   workflow_dispatch: {}
+  push:
+    branches: [test/pr1954-sync-releases]
 
 permissions:
   contents: write
