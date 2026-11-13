@@ -1,0 +1,10 @@
+name: conc-rollback
+on:
+  workflow_dispatch:
+    inputs:
+      service: { type: string, default: svc-a }
+jobs:
+  call:
+    uses: ./.github/workflows/conc-rollback-reusable.yml
+    with:
+      service: ${{ inputs.service }}

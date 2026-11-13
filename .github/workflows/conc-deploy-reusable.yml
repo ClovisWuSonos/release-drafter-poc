@@ -1,0 +1,13 @@
+name: conc-deploy-reusable
+on:
+  workflow_call:
+    inputs:
+      service: { type: string, required: true }
+concurrency:
+  group: argo-prod-deploy-${{ github.repository }}-${{ inputs.service }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "DEPLOY start $(date -u +%T)"; sleep 90; echo "DEPLOY end $(date -u +%T)"

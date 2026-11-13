@@ -1,0 +1,13 @@
+name: conc-rollback-reusable
+on:
+  workflow_call:
+    inputs:
+      service: { type: string, required: true }
+concurrency:
+  group: argo-prod-deploy-${{ github.repository }}-${{ inputs.service }}
+  cancel-in-progress: false
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "ROLLBACK start $(date -u +%T)"
